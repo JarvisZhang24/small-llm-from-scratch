@@ -46,6 +46,7 @@ data/**/*.jsonl
 .vscode/
 .idea/
 *.swp
+.ruff_cache/
 
 # OS
 .DS_Store
