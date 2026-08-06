@@ -26,12 +26,20 @@ from jarvislm.data import (
     PretrainDataset,
     prepare_fineweb_edu_splits,
 )
+from jarvislm.inference import generate_text
 from jarvislm.model import GPT, ModelConfig
 from jarvislm.optim.muon import configure_optimizers
+from jarvislm.tokenizer import GPT2Tokenizer
 
 TOKENS_PER_REFERENCE_STEP = 16 * 32 * 1_024
 TARGET_TRAIN_TOKENS = FINEWEB_EDU_V1_TRAIN_TOKENS
 REFERENCE_V1_STEPS = 20_000
+REFERENCE_SAMPLE_PROMPTS = (
+    "The meaning of life is",
+    "In a distant galaxy,",
+    "def fibonacci(n):",
+    "The president announced that",
+)
 
 
 def _reference_model_config() -> ModelConfig:
@@ -92,6 +100,12 @@ class TrainConfig:
     eval_interval: int = 500
     eval_batches: int = 20
     eval_use_ema: bool = False
+    generate_samples: bool = True
+    sample_prompts: tuple[str, ...] = REFERENCE_SAMPLE_PROMPTS
+    sample_max_new_tokens: int = 100
+    sample_temperature: float = 0.8
+    sample_top_k: int | None = None
+    sample_seed: int = 42
     use_wandb: bool = False
 
     def __post_init__(self) -> None:
@@ -118,6 +132,17 @@ class TrainConfig:
             raise ValueError("worker/checkpoint intervals must be non-negative; keep_last_checkpoints >= 1")
         if self.log_interval <= 0 or self.eval_interval <= 0 or self.eval_batches <= 0:
             raise ValueError("logging and evaluation intervals must be positive")
+        if self.sample_max_new_tokens < 0:
+            raise ValueError("sample_max_new_tokens must be non-negative")
+        if self.sample_temperature <= 0:
+            raise ValueError("sample_temperature must be positive")
+        if self.sample_top_k is not None and self.sample_top_k <= 0:
+            raise ValueError("sample_top_k must be positive when provided")
+        if self.generate_samples and (
+            not self.sample_prompts
+            or any(not isinstance(prompt, str) or not prompt for prompt in self.sample_prompts)
+        ):
+            raise ValueError("sample_prompts must contain non-empty strings")
 
     @property
     def tokens_per_step(self) -> int:
@@ -156,6 +181,7 @@ class TrainConfig:
             checkpoint_dir=None,
             save_interval=0,
             eval_interval=100,
+            generate_samples=False,
             use_wandb=False,
         )
 
@@ -170,6 +196,7 @@ class TrainMetrics:
     grad_norm: float
     tokens: int
     tokens_per_second: float
+    step_time_ms: float
 
 
 @dataclass(frozen=True)
@@ -321,17 +348,64 @@ def evaluate(
     return torch.stack(losses).mean().item()
 
 
+@torch.no_grad()
+def generate_qualitative_samples(
+    model: GPT,
+    tokenizer: GPT2Tokenizer,
+    prompts: Iterable[str],
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int | None,
+    seed: int,
+) -> tuple[tuple[str, str], ...]:
+    """Generate reproducible fixed-prompt samples without advancing training RNG."""
+    device = next(model.parameters()).device
+    cuda_devices = (
+        [device.index if device.index is not None else torch.cuda.current_device()]
+        if device.type == "cuda"
+        else []
+    )
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(seed)
+        return tuple(
+            (
+                prompt,
+                generate_text(
+                    model,
+                    tokenizer,
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                ),
+            )
+            for prompt in prompts
+        )
+
+
 def _checkpoint_paths(directory: Path) -> list[Path]:
     return sorted(directory.glob("step_*.pt")) if directory.exists() else []
 
 
-def find_latest_checkpoint(directory: str | Path) -> Path | None:
+def _checkpoint_candidates(directory: str | Path) -> list[Path]:
     directory = Path(directory)
     paths = _checkpoint_paths(directory)
     final_checkpoint = directory / "last.pt"
     if final_checkpoint.is_file():
         paths.append(final_checkpoint)
-    return max(paths, key=lambda path: path.stat().st_mtime) if paths else None
+    return sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def find_latest_checkpoint(directory: str | Path) -> Path | None:
+    paths = _checkpoint_candidates(directory)
+    return paths[0] if paths else None
+
+
+class _UnreadableCheckpointError(RuntimeError):
+    """Raised only when a checkpoint payload cannot be read from disk."""
 
 
 def save_checkpoint(
@@ -384,16 +458,29 @@ def load_checkpoint(
     device: torch.device,
 ) -> int:
     """Restore model, optimizers, EMA, and RNG state; return completed steps."""
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except Exception as error:
+        raise _UnreadableCheckpointError(
+            f"could not read checkpoint {path}: {type(error).__name__}: {error}"
+        ) from error
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"checkpoint must contain a mapping payload: {path}")
     model.load_state_dict(checkpoint["model"])
     adamw.load_state_dict(checkpoint["adamw"])
     if muon is not None and "muon" in checkpoint:
         muon.load_state_dict(checkpoint["muon"])
     if ema is not None and "ema" in checkpoint:
         ema.load_state_dict(checkpoint["ema"])
-    torch.random.set_rng_state(checkpoint["cpu_rng_state"])
+    # torch.load(map_location=cuda) also maps ByteTensor RNG states to CUDA.
+    # PyTorch generators require these state tensors on CPU.
+    torch.random.set_rng_state(checkpoint["cpu_rng_state"].cpu())
     if device.type == "cuda" and "cuda_rng_state" in checkpoint:
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+        cuda_rng_state = checkpoint["cuda_rng_state"]
+        if isinstance(cuda_rng_state, torch.Tensor):
+            torch.cuda.set_rng_state(cuda_rng_state.cpu(), device)
+        else:
+            torch.cuda.set_rng_state_all([state.cpu() for state in cuda_rng_state])
     return int(checkpoint["step"])
 
 
@@ -419,6 +506,11 @@ def _start_wandb(config: TrainConfig):
             "max_steps": config.max_steps,
             "use_muon": config.use_muon,
             "use_ema": config.use_ema,
+            "generate_samples": config.generate_samples,
+            "sample_prompts": config.sample_prompts,
+            "sample_max_new_tokens": config.sample_max_new_tokens,
+            "sample_temperature": config.sample_temperature,
+            "sample_top_k": config.sample_top_k,
         },
     )
 
@@ -488,10 +580,22 @@ def train(
 
     start_step = 0
     if config.resume and config.checkpoint_dir is not None:
-        latest = find_latest_checkpoint(config.checkpoint_dir)
-        if latest is not None:
-            start_step = load_checkpoint(latest, raw_model, adamw, muon, ema, device)
+        candidates = _checkpoint_candidates(config.checkpoint_dir)
+        unreadable: list[str] = []
+        for latest in candidates:
+            try:
+                start_step = load_checkpoint(latest, raw_model, adamw, muon, ema, device)
+            except _UnreadableCheckpointError as error:
+                unreadable.append(str(error))
+                print(f"warning: skipping unreadable checkpoint: {error}")
+                continue
             print(f"Resumed from {latest} at completed step {start_step}")
+            break
+        else:
+            if unreadable:
+                raise RuntimeError(
+                    "no readable checkpoint remains; refusing to restart training from step 0"
+                )
 
     print(
         f"JarvisLM-350M | recipe={config.recipe_name} | parameters={parameter_count:,} | "
@@ -499,6 +603,9 @@ def train(
         f"ema={'on' if ema else 'off'} | tokens/update={config.tokens_per_step:,} | "
         f"target steps={config.max_steps:,}"
     )
+    sample_tokenizer = GPT2Tokenizer() if config.generate_samples else None
+    if sample_tokenizer is not None:
+        sample_tokenizer.validate_model_vocab_size(config.model.vocab_size)
     run = _start_wandb(config)
     started = time.perf_counter()
     metrics: list[TrainMetrics] = []
@@ -546,6 +653,7 @@ def train(
                 grad_norm=float(grad_norm.item()),
                 tokens=config.tokens_per_step,
                 tokens_per_second=config.tokens_per_step / max(duration, 1e-9),
+                step_time_ms=duration * 1_000,
             )
             metrics.append(metric)
 
@@ -553,19 +661,49 @@ def train(
                 print(
                     f"step {completed_step:>6d} | loss {metric.loss:.4f} | "
                     f"lr {learning_rate:.2e} | grad {metric.grad_norm:.2f} | "
-                    f"tok/s {metric.tokens_per_second:,.0f}"
+                    f"tok/s {metric.tokens_per_second:,.0f} | "
+                    f"dt {metric.step_time_ms:,.0f}ms"
                 )
                 if run is not None:
                     run.log({"train/loss": metric.loss, "train/lr": learning_rate,
                              "train/grad_norm": metric.grad_norm,
-                             "train/tokens_per_second": metric.tokens_per_second}, step=completed_step)
+                             "train/tokens_per_second": metric.tokens_per_second,
+                             "train/step_time_ms": metric.step_time_ms}, step=completed_step)
 
             if val_loader is not None and completed_step % config.eval_interval == 0:
                 eval_model = ema.model if config.eval_use_ema and ema is not None else raw_model
                 val_loss = evaluate(eval_model, val_loader, device, config.eval_batches)
-                print(f"validation step {completed_step:>6d} | loss {val_loss:.4f}")
+                if not math.isfinite(val_loss):
+                    raise FloatingPointError(f"non-finite validation loss: {val_loss}")
+                perplexity = math.exp(val_loss)
+                print(
+                    f"validation step {completed_step:>6d} | loss {val_loss:.4f} | "
+                    f"ppl {perplexity:.2f}"
+                )
                 if run is not None:
-                    run.log({"validation/loss": val_loss}, step=completed_step)
+                    run.log(
+                        {"validation/loss": val_loss, "validation/perplexity": perplexity},
+                        step=completed_step,
+                    )
+
+                if config.generate_samples and sample_tokenizer is not None:
+                    samples = generate_qualitative_samples(
+                        raw_model,
+                        sample_tokenizer,
+                        config.sample_prompts,
+                        max_new_tokens=config.sample_max_new_tokens,
+                        temperature=config.sample_temperature,
+                        top_k=config.sample_top_k,
+                        seed=config.sample_seed,
+                    )
+                    sample_log: dict[str, str] = {}
+                    for index, (prompt, text) in enumerate(samples, start=1):
+                        print(
+                            f"sample step {completed_step:>6d} | prompt {prompt!r}\n{text}"
+                        )
+                        sample_log[f"samples/prompt_{index}"] = text
+                    if run is not None:
+                        run.log(sample_log, step=completed_step)
 
             if config.save_interval and completed_step % config.save_interval == 0:
                 path = save_checkpoint(
@@ -629,6 +767,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int)
     parser.add_argument("--eval-interval", type=int)
     parser.add_argument("--eval-batches", type=int)
+    parser.add_argument(
+        "--generate-samples", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--sample-max-new-tokens", type=int)
+    parser.add_argument("--sample-temperature", type=float)
+    parser.add_argument("--sample-top-k", type=int)
     parser.add_argument("--save-interval", type=int)
     parser.add_argument("--keep-last-checkpoints", type=int)
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=False)
@@ -662,6 +806,7 @@ def main() -> None:
             compile_model=args.compile,
             resume=args.resume,
             required_gpu=args.required_gpu or None,
+            generate_samples=args.generate_samples,
         )
         if args.muon is not None:
             config.use_muon = args.muon
@@ -675,6 +820,9 @@ def main() -> None:
             "log_interval",
             "eval_interval",
             "eval_batches",
+            "sample_max_new_tokens",
+            "sample_temperature",
+            "sample_top_k",
             "save_interval",
             "keep_last_checkpoints",
         ):

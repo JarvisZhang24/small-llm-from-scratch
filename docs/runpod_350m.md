@@ -8,6 +8,11 @@ JarvisLM reserves 20M for validation and uses 9,933,989,297 for training. Run
 all cloud operations from a RunPod Pod with a network volume attached at
 `/workspace`.
 
+The source training narrative is documented in
+[Building a 350M Transformer From Scratch](https://john463212.substack.com/p/building-a-350m-transformer-from).
+JarvisLM follows its published V1 architecture and training recipe while
+recording the validation-split difference described at the end of this guide.
+
 Use one network-volume data center that can supply both the A100 preflight Pod
 and the H200 full-training Pod. This project uses a 100 GB CA-MTL-3 network
 volume. The volume persists after a Pod is terminated, but it must be selected
@@ -72,6 +77,8 @@ rate. It resumes from `runs/v1-a100-preflight-mb16/checkpoints/last.pt` after an
 interruption and writes `train.log` plus `preflight_report.json` under
 `runs/v1-a100-preflight-mb16/`. The separate directory prevents checkpoints
 from the earlier conservative `2/256` diagnostic from entering this V1 gate.
+At each 100-step preflight validation, it also emits the same fixed-prompt
+qualitative samples used by the full run.
 
 The report passes only when the 1,000-step checkpoint exists, at least 20 metric
 records are present, losses and gradient norms are finite, the final logged
@@ -90,10 +97,23 @@ scripts/runpod/run_350m.sh full
 ```
 
 The H200 command refuses to start unless the A100 report explicitly passed. It
-uses `micro_batch=16`, `grad_accumulation=32`, 20,000 steps, and
+uses `micro_batch=32`, `grad_accumulation=16`, eight data-loader workers,
+20,000 steps, and
 `--required-gpu H200`. It writes checkpoints to
 `runs/v1-h200-10b/checkpoints`; re-running it automatically resumes from the most
-recent checkpoint.
+recent readable checkpoint. Checkpoints are written through a temporary file and
+atomically renamed; if the newest file is truncated or unreadable, resume falls
+back to the previous checkpoint instead of restarting from step zero. CPU and
+CUDA RNG states are restored on their required devices.
+
+Every 500 steps, the full run reports validation loss and perplexity, then
+generates 100-token completions at temperature `0.8` from the four fixed V1
+prompts used in the reference write-up: `The meaning of life is`,
+`In a distant galaxy,`, `def fibonacci(n):`, and
+`The president announced that`. The sampling RNG is isolated from training and
+reset to a fixed seed, so changes between checkpoints reflect model learning
+rather than different random draws. Metrics and samples are sent to W&B and the
+complete console stream is appended to `runs/v1-h200-10b/train.log`.
 
 Use `JARVISLM_USE_WANDB=0` only when W&B is intentionally disabled. To change
 the volume root, set `JARVISLM_VOLUME_ROOT`; to change only a planned test
@@ -101,7 +121,10 @@ length, set `JARVISLM_PREFLIGHT_STEPS` or `JARVISLM_H200_STEPS`. Changing either
 value makes the run a diagnostic override rather than the recorded V1 recipe.
 
 The reference repository did not publish how its validation directory was
-constructed. JarvisLM therefore records a transparent extension: it reserves a
-disjoint 20M-token validation split and trains on the remaining 9.934B tokens. Do
-not compare its absolute validation loss directly with an undocumented source
-split.
+constructed in code. The later reference write-up describes two held-out shards
+(approximately 2%) but does not identify which shards were selected. JarvisLM
+therefore keeps its already recorded, deterministic extension: it reserves a
+disjoint 20M-token validation split and trains on the remaining 9.934B tokens.
+This is sufficient for the fixed 20-batch validation sample but is not the same
+split as the write-up, so do not compare absolute validation loss directly with
+the source model's reported value.

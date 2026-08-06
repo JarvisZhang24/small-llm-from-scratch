@@ -207,6 +207,7 @@ trade-offs with reproducible experiment artifacts.
 
 ## References and acknowledgements
 
+- John Enev, [*Building a 350M Transformer From Scratch*](https://john463212.substack.com/p/building-a-350m-transformer-from), and the associated [`modern-llm`](https://github.com/JohnEnev/modern-llm) V1 implementation used as the baseline recipe.
 - Zhang & Sennrich, *Root Mean Square Layer Normalization* (RMSNorm).
 - Shazeer, *GLU Variants Improve Transformer* (SwiGLU).
 - Su et al., *RoFormer* (RoPE).

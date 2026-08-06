@@ -16,7 +16,8 @@ from jarvislm.tokenizer import GPT2Tokenizer
 DEFAULT_PROMPTS = (
     "The meaning of life is",
     "In a distant galaxy,",
-    "The three most important things to know about machine learning are",
+    "def fibonacci(n):",
+    "The president announced that",
 )
 
 

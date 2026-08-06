@@ -126,8 +126,9 @@ case "$command" in
       --data-dir "$train_dir" --val-dir "$val_dir" \
       --checkpoint-dir "$full_root/checkpoints" \
       --max-steps "${JARVISLM_H200_STEPS:-20000}" \
-      --micro-batch-size 16 --grad-accumulation-steps 32 --num-workers 4 \
+      --micro-batch-size 32 --grad-accumulation-steps 16 --num-workers 8 \
       --log-interval 10 --eval-interval 500 --save-interval 1000 \
-      --required-gpu H200 --compile --resume --no-muon --no-ema "${wandb_args[@]}"
+      --required-gpu H200 --compile --resume --no-muon --no-ema \
+      "${wandb_args[@]}" 2>&1 | tee -a "$full_root/train.log"
     ;;
 esac
