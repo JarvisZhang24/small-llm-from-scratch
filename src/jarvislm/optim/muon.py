@@ -129,7 +129,7 @@ def configure_optimizers(
         "weight_decay": weight_decay,
         "betas": (0.9, 0.95),
     }
-    # ``fused=True`` is an H100 optimization but is not implemented on CPU/MPS.
+    # ``fused=True`` is a CUDA optimization but is not implemented on CPU/MPS.
     if next(model.parameters()).device.type == "cuda":
         adamw_kwargs["fused"] = True
     adamw_optimizer = torch.optim.AdamW(adamw_params, **adamw_kwargs)

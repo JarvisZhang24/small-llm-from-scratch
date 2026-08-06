@@ -1,4 +1,4 @@
-"""Single-H100 training entry point for the JarvisLM-350M baseline.
+"""Single-H200 training entry point for the JarvisLM-350M baseline.
 
 This module intentionally contains no DDP, multi-node, SFT, or 1.5B route.
 The default configuration reproduces the reference project's 350M architecture
@@ -47,7 +47,7 @@ def _reference_model_config() -> ModelConfig:
 
 @dataclass
 class TrainConfig:
-    """Configuration for one 350M run on one NVIDIA H100 GPU."""
+    """Configuration for one 350M run on one NVIDIA H200 GPU."""
 
     model: ModelConfig = field(default_factory=_reference_model_config)
     run_name: str = "jarvislm-350m"
@@ -71,7 +71,7 @@ class TrainConfig:
     warmup_steps: int = 1_000
     compile_model: bool = True
     device: str = "cuda"
-    require_h100: bool = True
+    required_gpu: str | None = "H200"
     seed: int = 42
     num_workers: int = 4
 
@@ -104,6 +104,8 @@ class TrainConfig:
             raise ValueError("muon_learning_rate must be positive and weight_decay non-negative")
         if self.grad_clip_norm <= 0 or not 0.0 <= self.ema_decay < 1.0:
             raise ValueError("grad_clip_norm must be positive and ema_decay must be in [0, 1)")
+        if self.required_gpu is not None and not self.required_gpu.strip():
+            raise ValueError("required_gpu must be a non-empty GPU name or None")
         if self.num_workers < 0 or self.save_interval < 0 or self.keep_last_checkpoints < 1:
             raise ValueError("worker/checkpoint intervals must be non-negative; keep_last_checkpoints >= 1")
         if self.log_interval <= 0 or self.eval_interval <= 0 or self.eval_batches <= 0:
@@ -140,7 +142,7 @@ class TrainConfig:
             warmup_steps=0,
             compile_model=False,
             device=device,
-            require_h100=False,
+            required_gpu=None,
             num_workers=0,
             checkpoint_dir=None,
             save_interval=0,
@@ -226,10 +228,12 @@ def cosine_learning_rate(config: TrainConfig, step: int) -> float:
 def _require_device(config: TrainConfig) -> torch.device:
     if config.device == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is required for the 350M H100 run but is not available")
+            raise RuntimeError("CUDA is required for the 350M GPU run but is not available")
         device_name = torch.cuda.get_device_name(0)
-        if config.require_h100 and "H100" not in device_name.upper():
-            raise RuntimeError(f"This run requires an NVIDIA H100, found: {device_name}")
+        if config.required_gpu and config.required_gpu.upper() not in device_name.upper():
+            raise RuntimeError(
+                f"This run requires an NVIDIA {config.required_gpu}, found: {device_name}"
+            )
         return torch.device("cuda")
     return torch.device("cpu")
 
@@ -584,7 +588,7 @@ def smoke_test(device: str = "cpu") -> TrainResult:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the single-H100 JarvisLM-350M recipe")
+    parser = argparse.ArgumentParser(description="Run the single-H200 JarvisLM-350M recipe")
     parser.add_argument("--smoke", action="store_true", help="two CPU-safe integration updates")
     parser.add_argument("--prepare-data", action="store_true", help="stream FineWeb-Edu shards before training")
     parser.add_argument("--prepare-only", action="store_true", help="prepare shards, then exit without training")
@@ -598,10 +602,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--micro-batch-size", type=int)
     parser.add_argument("--grad-accumulation-steps", type=int)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--log-interval", type=int)
+    parser.add_argument("--eval-interval", type=int)
+    parser.add_argument("--eval-batches", type=int)
+    parser.add_argument("--save-interval", type=int)
+    parser.add_argument("--keep-last-checkpoints", type=int)
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--require-h100", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--required-gpu", default="H200", help="GPU name required for CUDA training")
     args = parser.parse_args()
     if args.prepare_data and (
         args.prepare_train_tokens <= 0 or args.prepare_val_tokens <= 0
@@ -625,9 +634,19 @@ def main() -> None:
             use_wandb=args.wandb,
             compile_model=args.compile,
             resume=args.resume,
-            require_h100=args.require_h100,
+            required_gpu=args.required_gpu or None,
         )
-        for key in ("max_steps", "micro_batch_size", "grad_accumulation_steps", "num_workers"):
+        for key in (
+            "max_steps",
+            "micro_batch_size",
+            "grad_accumulation_steps",
+            "num_workers",
+            "log_interval",
+            "eval_interval",
+            "eval_batches",
+            "save_interval",
+            "keep_last_checkpoints",
+        ):
             value = getattr(args, key)
             if value is not None:
                 setattr(config, key, value)

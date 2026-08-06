@@ -29,16 +29,14 @@ JarvisLM treats each of these as a separately verifiable component.
 | Area | Status | Notes |
 | --- | --- | --- |
 | Python package and editable installation | Complete | `src/` package layout with `pyproject.toml` |
-| `ModelConfig` | Complete | Architecture validation, GQA constraints, RoPE constraints |
-| `RMSNorm` | Complete | Unit-tested against the mathematical formula |
-| `SwiGLU` | In progress | Next model component |
-| RoPE and causal attention | Planned | Includes an explicit future-leak test |
-| Full GPT model and loss | Planned | Includes one-batch overfitting check |
-| Tokenization and binary shards | Planned | GPT-2 tokenizer, `uint16` token shards |
-| Training and checkpoint recovery | Planned | AdamW baseline, cosine schedule, W&B |
-| 350M pre-training run | Planned | Cloud GPU execution after small-model validation |
-| Muon / AdamW ablation | Planned | Report convergence and throughput |
-| KV cache and inference benchmark | Planned | Compare cached and uncached decoding |
+| Model and attention components | Complete | RMSNorm, SwiGLU, RoPE, causal attention, MHA/GQA options |
+| Full GPT model and loss | Complete | Unit-tested forward, generation, gradients, and parameter count |
+| Tokenization and binary shards | Complete | tiktoken GPT-2 and `uint16` FineWeb-Edu shards |
+| Training and checkpoint recovery | Complete | bf16, Muon + AdamW, cosine schedule, EMA, W&B, resume |
+| RunPod training workflow | Complete | CA-MTL-3 network volume, A100 gate, H200 continuation |
+| 350M pre-training results | Pending | Must be measured on the user's actual RunPod execution |
+| Muon / AdamW ablation | Pending | Requires fixed-data controlled experiment artifacts |
+| KV cache and inference benchmark | In progress | Compare cached and uncached decoding |
 
 Only completed items are presented as completed. Training results and benchmark numbers will be added after reproducible runs are available.
 
@@ -53,7 +51,7 @@ The target experimental configuration follows a modern decoder-only Transformer 
 | Hidden size (`d_model`) | 1,024 | Token representation width |
 | Transformer layers | 24 | Model depth |
 | Query heads | 16 | Multi-head attention |
-| KV heads | 4 | Grouped-query attention (GQA) |
+| KV heads | 16 | Reference V1 baseline uses standard MHA (GQA is optional) |
 | Head dimension | 64 | `d_model / n_heads` |
 | FFN hidden dimension | 2,730 | `int(8 / 3 * d_model)` for SwiGLU |
 | Normalization | RMSNorm | Pre-normalization Transformer blocks |
@@ -187,10 +185,13 @@ The following experiments will be reported with the exact configuration, hardwar
 
 ## Compute plan
 
-- **Mac (MPS):** unit tests, shape checks, tiny-model overfitting, and short smoke runs.
-- **Modal:** short remote validation runs and isolated training experiments.
-- **RunPod GPU Pod:** long CUDA pre-training and checkpointed continuation.
-- **Serverless endpoint:** optional final inference demo after the model and KV cache are complete.
+- **Mac (MPS):** unit tests and small, local component checks only.
+- **RunPod network volume:** persistent FineWeb-Edu shards, checkpoints, Hugging Face cache, and W&B logs.
+- **RunPod A100:** 500-step full-architecture preflight before expensive training.
+- **RunPod H200:** resumed 10B-token single-GPU pre-training after the A100 report passes.
+
+The exact operational commands and failure safeguards are in
+[the RunPod 350M guide](docs/runpod_350m.md).
 
 ## Resume-ready project description
 

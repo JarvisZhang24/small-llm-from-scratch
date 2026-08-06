@@ -12,7 +12,7 @@ from jarvislm.training.train import (
 )
 
 
-def test_reference_350m_profile_matches_the_single_h100_recipe() -> None:
+def test_reference_350m_profile_matches_the_single_h200_recipe() -> None:
     config = TrainConfig()
 
     assert config.model.vocab_size == 50_304
@@ -25,6 +25,7 @@ def test_reference_350m_profile_matches_the_single_h100_recipe() -> None:
     assert config.model.use_mhc is False
     assert config.tokens_per_step == TOKENS_PER_REFERENCE_STEP == 524_288
     assert config.max_steps == 19_074
+    assert config.required_gpu == "H200"
 
 
 def test_reference_schedule_warms_up_and_decays() -> None:
