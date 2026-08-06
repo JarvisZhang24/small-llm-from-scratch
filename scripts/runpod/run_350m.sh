@@ -64,10 +64,23 @@ case "$command" in
       echo "Inspect or back up the directories before removing them manually." >&2
       exit 1
     fi
+    # Some datasets/PyArrow builds can abort while CPython is finalizing worker
+    # threads, after every shard was already flushed.  The manifest is the
+    # authoritative completion check, so only accept such a non-zero exit when
+    # the exact requested token counts can still be validated.
+    set +e
     "$python_bin" -m jarvislm.training.train \
       --prepare-data --prepare-only \
       --data-dir "$train_dir" --val-dir "$val_dir"
-    "${verify_data[@]}" --write
+    prepare_status=$?
+    set -e
+    if ! "${verify_data[@]}" --write; then
+      echo "FineWeb-Edu preparation did not produce a complete valid dataset." >&2
+      exit "$prepare_status"
+    fi
+    if [[ "$prepare_status" -ne 0 ]]; then
+      echo "Warning: preparation exited non-zero after valid shards were written; accepted after manifest verification." >&2
+    fi
     ;;
   preflight)
     "$python_bin" "$repo_root/scripts/runpod/check_environment.py" \
