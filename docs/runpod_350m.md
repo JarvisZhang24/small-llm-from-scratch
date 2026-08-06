@@ -43,7 +43,9 @@ The persistent layout is:
 ├── repo/
 ├── data/fineweb-edu-v1-sample-10bt/{train,val,manifest.json}
 ├── cache/{huggingface,wandb}
-└── runs/{v1-a100-preflight-mb16,v1-h200-10b}
+└── runs/
+    ├── {v1-a100-preflight-mb16,v1-h200-10b}
+    └── {v2-modern-a100-preflight-mb16,v2-modern-h200-5.5b}
 ```
 
 Prepare the 9,933,989,297/20M token train/validation split exactly once:
@@ -128,3 +130,50 @@ disjoint 20M-token validation split and trains on the remaining 9.934B tokens.
 This is sufficient for the fixed 20-batch validation sample but is not the same
 split as the write-up, so do not compare absolute validation loss directly with
 the source model's reported value.
+
+## V2 modern matched-budget comparison
+
+The `v2_modern` recipe keeps every controlled variable from the V1 H200 run
+that can be held fixed: the exact train/validation shards, GPT-2 tokenizer,
+seed 42, context 1,024, global batch of 524,288 tokens, validation batches,
+fixed prompts, and the original 20,000-step learning-rate trajectory. It
+changes only the intended V2 stack:
+
+- 16 query heads / 4 KV heads (GQA);
+- QK-Norm and Differential Attention;
+- Muon for eligible attention/MLP matrices plus AdamW for embeddings, norms,
+  and other parameters;
+- EMA with decay 0.9995, used for the primary validation and samples;
+- no mHC and no XSA.
+
+The V2 run stops at the same 10,500 updates as the recorded V1 baseline. This
+is 5,505,024,000 scheduled tokens. Its cosine schedule still uses 20,000 as
+the decay horizon, so the learning rate at every compared step matches V1;
+10,500 is an early-stop boundary, not a new cosine endpoint.
+
+First run the short, recipe-specific A100 gate:
+
+```bash
+cd /workspace/jarvislm-350m/repo
+git pull
+python -m pip install -e '.[dev]'
+scripts/runpod/run_v2_modern.sh preflight
+```
+
+This runs 200 updates at `micro_batch=16`, `grad_accumulation=32` and writes
+only under `runs/v2-modern-a100-preflight-mb16`. It does not read or overwrite
+any V1 checkpoint. After its report passes, launch the H200 comparison:
+
+```bash
+scripts/runpod/run_v2_modern.sh full
+```
+
+The full command uses `micro_batch=32`, `grad_accumulation=16`, stops at
+10,500, and resumes only from `runs/v2-modern-h200-5.5b/checkpoints`. Every
+500 steps it records both `validation/raw_*` and `validation/ema_*`; the
+backward-compatible `validation/loss` and `validation/perplexity` curves point
+to EMA for this recipe. Fixed-prompt generations also use EMA weights.
+
+Before leaving a new H200 run unattended, inspect its first 50-100 steps for
+finite loss/gradients, stable throughput, and memory headroom. The A100 gate
+checks correctness and recovery; it cannot predict the exact H200 throughput.

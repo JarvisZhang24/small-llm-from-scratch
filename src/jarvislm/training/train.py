@@ -1,8 +1,10 @@
-"""Single-GPU training entry point for the JarvisLM-350M V1 baseline.
+"""Single-GPU pretraining entry point for the JarvisLM V1/V2 comparison.
 
 This module intentionally contains no DDP, multi-node, SFT, or 1.5B route.
-The default configuration reproduces the reference project's historical V1
-architecture and AdamW training recipe at commit ``74351e3``.
+The default configuration preserves the reference project's historical V1
+baseline.  The opt-in ``v2_modern`` recipe adds the final V2 techniques that
+survived the source project's ablations without changing the training data or
+tokens per optimizer update.
 """
 
 import argparse
@@ -34,6 +36,7 @@ from jarvislm.tokenizer import GPT2Tokenizer
 TOKENS_PER_REFERENCE_STEP = 16 * 32 * 1_024
 TARGET_TRAIN_TOKENS = FINEWEB_EDU_V1_TRAIN_TOKENS
 REFERENCE_V1_STEPS = 20_000
+V2_COMPARISON_STEPS = 10_500
 REFERENCE_SAMPLE_PROMPTS = (
     "The meaning of life is",
     "In a distant galaxy,",
@@ -59,9 +62,27 @@ def _reference_model_config() -> ModelConfig:
     )
 
 
+def _v2_modern_model_config() -> ModelConfig:
+    """The source project's final V2 architecture, excluding rejected mHC."""
+    return ModelConfig(
+        vocab_size=50_304,
+        max_seq_len=1_024,
+        d_model=1_024,
+        n_layers=24,
+        n_heads=16,
+        n_kv_heads=4,
+        use_flash=True,
+        tie_weights=True,
+        use_qk_norm=True,
+        use_diff_attn=True,
+        use_mhc=False,
+        use_xsa=False,
+    )
+
+
 @dataclass
 class TrainConfig:
-    """Historical V1 configuration for one 350M single-GPU run."""
+    """Configuration for one single-GPU JarvisLM pretraining run."""
 
     model: ModelConfig = field(default_factory=_reference_model_config)
     recipe_name: str = "v1_350m"
@@ -74,6 +95,8 @@ class TrainConfig:
     grad_accumulation_steps: int = 32
     # The source V1 ran 20,000 updates: 10,485,760,000 scheduled tokens.
     max_steps: int = REFERENCE_V1_STEPS
+    # Keep this separate from max_steps for matched early-stop comparisons.
+    lr_decay_steps: int | None = None
 
     max_learning_rate: float = 3e-4
     min_learning_rate: float = 3e-5
@@ -113,23 +136,41 @@ class TrainConfig:
 
     def validate(self) -> None:
         if self.device not in {"cpu", "cuda"}:
-            raise ValueError("350M training supports device='cuda'; cpu is only for smoke tests")
+            raise ValueError(
+                "350M training supports device='cuda'; cpu is only for smoke tests"
+            )
         if self.micro_batch_size <= 0 or self.grad_accumulation_steps <= 0:
-            raise ValueError("micro_batch_size and grad_accumulation_steps must be positive")
+            raise ValueError(
+                "micro_batch_size and grad_accumulation_steps must be positive"
+            )
         if self.max_steps <= 0 or self.warmup_steps < 0:
             raise ValueError("max_steps must be positive and warmup_steps non-negative")
+        if self.lr_decay_steps is not None and self.lr_decay_steps <= 0:
+            raise ValueError("lr_decay_steps must be positive when provided")
+        if self.schedule_steps < self.warmup_steps:
+            raise ValueError("learning-rate schedule must not end before warmup")
         if self.max_learning_rate <= 0 or self.min_learning_rate <= 0:
             raise ValueError("learning rates must be positive")
         if self.min_learning_rate > self.max_learning_rate:
             raise ValueError("min_learning_rate must not exceed max_learning_rate")
         if self.muon_learning_rate <= 0 or self.weight_decay < 0:
-            raise ValueError("muon_learning_rate must be positive and weight_decay non-negative")
+            raise ValueError(
+                "muon_learning_rate must be positive and weight_decay non-negative"
+            )
         if self.grad_clip_norm <= 0 or not 0.0 <= self.ema_decay < 1.0:
-            raise ValueError("grad_clip_norm must be positive and ema_decay must be in [0, 1)")
+            raise ValueError(
+                "grad_clip_norm must be positive and ema_decay must be in [0, 1)"
+            )
         if self.required_gpu is not None and not self.required_gpu.strip():
             raise ValueError("required_gpu must be a non-empty GPU name or None")
-        if self.num_workers < 0 or self.save_interval < 0 or self.keep_last_checkpoints < 1:
-            raise ValueError("worker/checkpoint intervals must be non-negative; keep_last_checkpoints >= 1")
+        if (
+            self.num_workers < 0
+            or self.save_interval < 0
+            or self.keep_last_checkpoints < 1
+        ):
+            raise ValueError(
+                "worker/checkpoint intervals must be non-negative; keep_last_checkpoints >= 1"
+            )
         if self.log_interval <= 0 or self.eval_interval <= 0 or self.eval_batches <= 0:
             raise ValueError("logging and evaluation intervals must be positive")
         if self.sample_max_new_tokens < 0:
@@ -140,13 +181,44 @@ class TrainConfig:
             raise ValueError("sample_top_k must be positive when provided")
         if self.generate_samples and (
             not self.sample_prompts
-            or any(not isinstance(prompt, str) or not prompt for prompt in self.sample_prompts)
+            or any(
+                not isinstance(prompt, str) or not prompt
+                for prompt in self.sample_prompts
+            )
         ):
             raise ValueError("sample_prompts must contain non-empty strings")
 
     @property
     def tokens_per_step(self) -> int:
-        return self.model.max_seq_len * self.micro_batch_size * self.grad_accumulation_steps
+        return (
+            self.model.max_seq_len
+            * self.micro_batch_size
+            * self.grad_accumulation_steps
+        )
+
+    @property
+    def schedule_steps(self) -> int:
+        """Update count used as the cosine-decay horizon."""
+        return self.lr_decay_steps or self.max_steps
+
+    @classmethod
+    def for_recipe(cls, recipe_name: str) -> "TrainConfig":
+        """Build a source-faithful V1 baseline or final V2 comparison recipe."""
+        if recipe_name == "v1_350m":
+            return cls()
+        if recipe_name == "v2_modern":
+            return cls(
+                model=_v2_modern_model_config(),
+                recipe_name="v2_modern",
+                run_name="jarvislm-v2-modern-315m",
+                max_steps=V2_COMPARISON_STEPS,
+                lr_decay_steps=REFERENCE_V1_STEPS,
+                use_muon=True,
+                use_ema=True,
+                eval_use_ema=True,
+                checkpoint_dir=Path("checkpoints/jarvislm-v2-modern-315m"),
+            )
+        raise ValueError(f"unknown training recipe: {recipe_name}")
 
     @classmethod
     def smoke(cls, device: str = "cpu") -> "TrainConfig":
@@ -218,7 +290,9 @@ class EMA:
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
-        for ema_parameter, parameter in zip(self.model.parameters(), model.parameters()):
+        for ema_parameter, parameter in zip(
+            self.model.parameters(), model.parameters()
+        ):
             ema_parameter.lerp_(parameter, 1.0 - self.decay)
 
     def state_dict(self) -> dict[str, torch.Tensor]:
@@ -253,9 +327,11 @@ def cosine_learning_rate(config: TrainConfig, step: int) -> float:
             * step
             / max(config.warmup_steps, 1)
         )
-    if step >= config.max_steps:
+    if step >= config.schedule_steps:
         return config.min_learning_rate
-    progress = (step - config.warmup_steps) / max(config.max_steps - config.warmup_steps, 1)
+    progress = (step - config.warmup_steps) / max(
+        config.schedule_steps - config.warmup_steps, 1
+    )
     return config.min_learning_rate + 0.5 * (
         config.max_learning_rate - config.min_learning_rate
     ) * (1.0 + math.cos(math.pi * progress))
@@ -264,9 +340,14 @@ def cosine_learning_rate(config: TrainConfig, step: int) -> float:
 def _require_device(config: TrainConfig) -> torch.device:
     if config.device == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is required for the 350M GPU run but is not available")
+            raise RuntimeError(
+                "CUDA is required for the 350M GPU run but is not available"
+            )
         device_name = torch.cuda.get_device_name(0)
-        if config.required_gpu and config.required_gpu.upper() not in device_name.upper():
+        if (
+            config.required_gpu
+            and config.required_gpu.upper() not in device_name.upper()
+        ):
             raise RuntimeError(
                 f"This run requires an NVIDIA {config.required_gpu}, found: {device_name}"
             )
@@ -275,7 +356,10 @@ def _require_device(config: TrainConfig) -> torch.device:
 
 
 def _make_loader(
-    dataset: Dataset[tuple[torch.Tensor, torch.Tensor]], config: TrainConfig, *, shuffle: bool
+    dataset: Dataset[tuple[torch.Tensor, torch.Tensor]],
+    config: TrainConfig,
+    *,
+    shuffle: bool,
 ) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
     if len(dataset) < config.micro_batch_size:
         raise ValueError("dataset is smaller than micro_batch_size")
@@ -313,7 +397,9 @@ def _set_learning_rates(
     for group in adamw.param_groups:
         group["lr"] = learning_rate
     if muon is not None:
-        scaled_muon_lr = learning_rate * config.muon_learning_rate / config.max_learning_rate
+        scaled_muon_lr = (
+            learning_rate * config.muon_learning_rate / config.max_learning_rate
+        )
         for group in muon.param_groups:
             group["lr"] = scaled_muon_lr
     return learning_rate
@@ -504,8 +590,15 @@ def _start_wandb(config: TrainConfig):
             "model": asdict(config.model),
             "tokens_per_step": config.tokens_per_step,
             "max_steps": config.max_steps,
+            "lr_decay_steps": config.schedule_steps,
+            "max_learning_rate": config.max_learning_rate,
+            "min_learning_rate": config.min_learning_rate,
+            "muon_learning_rate": config.muon_learning_rate,
+            "weight_decay": config.weight_decay,
             "use_muon": config.use_muon,
             "use_ema": config.use_ema,
+            "ema_decay": config.ema_decay,
+            "eval_use_ema": config.eval_use_ema,
             "generate_samples": config.generate_samples,
             "sample_prompts": config.sample_prompts,
             "sample_max_new_tokens": config.sample_max_new_tokens,
@@ -524,9 +617,13 @@ def _prepare_data_if_requested(
     if not enabled:
         return
     if config.data_dir.exists() and any(config.data_dir.glob("*.bin")):
-        raise FileExistsError(f"refusing to overwrite existing training shards: {config.data_dir}")
+        raise FileExistsError(
+            f"refusing to overwrite existing training shards: {config.data_dir}"
+        )
     if config.val_dir.exists() and any(config.val_dir.glob("*.bin")):
-        raise FileExistsError(f"refusing to overwrite existing validation shards: {config.val_dir}")
+        raise FileExistsError(
+            f"refusing to overwrite existing validation shards: {config.val_dir}"
+        )
     prepare_fineweb_edu_splits(
         config.data_dir,
         config.val_dir,
@@ -576,7 +673,9 @@ def train(
     train_loader = _make_loader(dataset, config, shuffle=True)
     if val_dataset is None and config.val_dir.exists():
         val_dataset = PretrainDataset(config.val_dir, config.model.max_seq_len)
-    val_loader = _make_loader(val_dataset, config, shuffle=False) if val_dataset else None
+    val_loader = (
+        _make_loader(val_dataset, config, shuffle=False) if val_dataset else None
+    )
 
     start_step = 0
     if config.resume and config.checkpoint_dir is not None:
@@ -584,7 +683,9 @@ def train(
         unreadable: list[str] = []
         for latest in candidates:
             try:
-                start_step = load_checkpoint(latest, raw_model, adamw, muon, ema, device)
+                start_step = load_checkpoint(
+                    latest, raw_model, adamw, muon, ema, device
+                )
             except _UnreadableCheckpointError as error:
                 unreadable.append(str(error))
                 print(f"warning: skipping unreadable checkpoint: {error}")
@@ -599,6 +700,9 @@ def train(
 
     print(
         f"JarvisLM-350M | recipe={config.recipe_name} | parameters={parameter_count:,} | "
+        f"heads={config.model.n_heads}Q/{config.model.n_kv_heads}KV | "
+        f"qk_norm={'on' if config.model.use_qk_norm else 'off'} | "
+        f"diff_attn={'on' if config.model.use_diff_attn else 'off'} | "
         f"device={device} | optimizer={'Muon+AdamW' if muon else 'AdamW'} | "
         f"ema={'on' if ema else 'off'} | tokens/update={config.tokens_per_step:,} | "
         f"target steps={config.max_steps:,}"
@@ -635,9 +739,13 @@ def train(
                 (loss / config.grad_accumulation_steps).backward()
                 total_loss += loss.detach().item()
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(raw_model.parameters(), config.grad_clip_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                raw_model.parameters(), config.grad_clip_norm
+            )
             if not torch.isfinite(grad_norm):
-                raise FloatingPointError(f"non-finite gradient norm: {grad_norm.item()}")
+                raise FloatingPointError(
+                    f"non-finite gradient norm: {grad_norm.item()}"
+                )
             if muon is not None:
                 muon.step()
             adamw.step()
@@ -665,30 +773,83 @@ def train(
                     f"dt {metric.step_time_ms:,.0f}ms"
                 )
                 if run is not None:
-                    run.log({"train/loss": metric.loss, "train/lr": learning_rate,
-                             "train/grad_norm": metric.grad_norm,
-                             "train/tokens_per_second": metric.tokens_per_second,
-                             "train/step_time_ms": metric.step_time_ms}, step=completed_step)
-
-            if val_loader is not None and completed_step % config.eval_interval == 0:
-                eval_model = ema.model if config.eval_use_ema and ema is not None else raw_model
-                val_loss = evaluate(eval_model, val_loader, device, config.eval_batches)
-                if not math.isfinite(val_loss):
-                    raise FloatingPointError(f"non-finite validation loss: {val_loss}")
-                perplexity = math.exp(val_loss)
-                print(
-                    f"validation step {completed_step:>6d} | loss {val_loss:.4f} | "
-                    f"ppl {perplexity:.2f}"
-                )
-                if run is not None:
+                    muon_learning_rate = (
+                        learning_rate
+                        * config.muon_learning_rate
+                        / config.max_learning_rate
+                        if muon is not None
+                        else 0.0
+                    )
                     run.log(
-                        {"validation/loss": val_loss, "validation/perplexity": perplexity},
+                        {
+                            "train/loss": metric.loss,
+                            "train/lr": learning_rate,
+                            "train/muon_lr": muon_learning_rate,
+                            "train/grad_norm": metric.grad_norm,
+                            "train/tokens_per_second": metric.tokens_per_second,
+                            "train/step_time_ms": metric.step_time_ms,
+                        },
                         step=completed_step,
                     )
 
+            if val_loader is not None and completed_step % config.eval_interval == 0:
+                raw_val_loss = evaluate(
+                    raw_model, val_loader, device, config.eval_batches
+                )
+                if not math.isfinite(raw_val_loss):
+                    raise FloatingPointError(
+                        f"non-finite raw validation loss: {raw_val_loss}"
+                    )
+                raw_perplexity = math.exp(raw_val_loss)
+                ema_val_loss = None
+                ema_perplexity = None
+                if ema is not None:
+                    ema_val_loss = evaluate(
+                        ema.model, val_loader, device, config.eval_batches
+                    )
+                    if not math.isfinite(ema_val_loss):
+                        raise FloatingPointError(
+                            f"non-finite EMA validation loss: {ema_val_loss}"
+                        )
+                    ema_perplexity = math.exp(ema_val_loss)
+
+                eval_model = (
+                    ema.model if config.eval_use_ema and ema is not None else raw_model
+                )
+                eval_model_name = "EMA" if eval_model is not raw_model else "raw"
+                val_loss = ema_val_loss if eval_model_name == "EMA" else raw_val_loss
+                perplexity = (
+                    ema_perplexity if eval_model_name == "EMA" else raw_perplexity
+                )
+                assert val_loss is not None and perplexity is not None
+                print(
+                    f"validation step {completed_step:>6d} | loss {val_loss:.4f} | "
+                    f"ppl {perplexity:.2f} | model {eval_model_name}"
+                )
+                if ema_val_loss is not None and ema_perplexity is not None:
+                    print(
+                        f"validation raw  {completed_step:>6d} | loss "
+                        f"{raw_val_loss:.4f} | ppl {raw_perplexity:.2f}"
+                    )
+                if run is not None:
+                    validation_log = {
+                        "validation/loss": val_loss,
+                        "validation/perplexity": perplexity,
+                        "validation/raw_loss": raw_val_loss,
+                        "validation/raw_perplexity": raw_perplexity,
+                    }
+                    if ema_val_loss is not None and ema_perplexity is not None:
+                        validation_log.update(
+                            {
+                                "validation/ema_loss": ema_val_loss,
+                                "validation/ema_perplexity": ema_perplexity,
+                            }
+                        )
+                    run.log(validation_log, step=completed_step)
+
                 if config.generate_samples and sample_tokenizer is not None:
                     samples = generate_qualitative_samples(
-                        raw_model,
+                        eval_model,
                         sample_tokenizer,
                         config.sample_prompts,
                         max_new_tokens=config.sample_max_new_tokens,
@@ -731,7 +892,9 @@ def train(
             print(f"saved final checkpoint: {final_path}")
         if run is not None:
             run.finish()
-    return TrainResult(device.type, parameter_count, tuple(metrics), time.perf_counter() - started)
+    return TrainResult(
+        device.type, parameter_count, tuple(metrics), time.perf_counter() - started
+    )
 
 
 def smoke_test(device: str = "cpu") -> TrainResult:
@@ -741,26 +904,35 @@ def smoke_test(device: str = "cpu") -> TrainResult:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the historical JarvisLM V1 350M recipe")
-    parser.add_argument("--smoke", action="store_true", help="two CPU-safe integration updates")
-    parser.add_argument("--prepare-data", action="store_true", help="stream FineWeb-Edu shards before training")
-    parser.add_argument("--prepare-only", action="store_true", help="prepare shards, then exit without training")
+    parser = argparse.ArgumentParser(description="Run a JarvisLM single-GPU recipe")
+    parser.add_argument(
+        "--smoke", action="store_true", help="two CPU-safe integration updates"
+    )
+    parser.add_argument(
+        "--prepare-data",
+        action="store_true",
+        help="stream FineWeb-Edu shards before training",
+    )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="prepare shards, then exit without training",
+    )
     parser.add_argument("--prepare-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
     parser.add_argument(
         "--prepare-val-tokens", type=int, default=FINEWEB_EDU_V1_VAL_TOKENS
     )
-    parser.add_argument("--recipe", choices=("v1_350m",), default="v1_350m")
-    parser.add_argument("--run-name", default="jarvislm-v1-350m")
+    parser.add_argument("--recipe", choices=("v1_350m", "v2_modern"), default="v1_350m")
+    parser.add_argument("--run-name")
     parser.add_argument(
         "--data-dir", type=Path, default=Path("data/fineweb-edu-v1-sample-10bt/train")
     )
     parser.add_argument(
         "--val-dir", type=Path, default=Path("data/fineweb-edu-v1-sample-10bt/val")
     )
-    parser.add_argument(
-        "--checkpoint-dir", type=Path, default=Path("checkpoints/jarvislm-v1-350m")
-    )
+    parser.add_argument("--checkpoint-dir", type=Path)
     parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--lr-decay-steps", type=int)
     parser.add_argument("--micro-batch-size", type=int)
     parser.add_argument("--grad-accumulation-steps", type=int)
     parser.add_argument("--num-workers", type=int)
@@ -776,11 +948,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-interval", type=int)
     parser.add_argument("--keep-last-checkpoints", type=int)
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--compile", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--muon", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--ema", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--required-gpu", default="H200", help="GPU name required for CUDA training")
+    parser.add_argument(
+        "--eval-use-ema", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
+        "--required-gpu", default="H200", help="GPU name required for CUDA training"
+    )
     args = parser.parse_args()
     if args.prepare_data and (
         args.prepare_train_tokens <= 0 or args.prepare_val_tokens <= 0
@@ -796,24 +975,27 @@ def main() -> None:
     if args.smoke:
         result = smoke_test()
     else:
-        config = TrainConfig(
-            recipe_name=args.recipe,
-            run_name=args.run_name,
-            data_dir=args.data_dir,
-            val_dir=args.val_dir,
-            checkpoint_dir=args.checkpoint_dir,
-            use_wandb=args.wandb,
-            compile_model=args.compile,
-            resume=args.resume,
-            required_gpu=args.required_gpu or None,
-            generate_samples=args.generate_samples,
-        )
+        config = TrainConfig.for_recipe(args.recipe)
+        config.data_dir = args.data_dir
+        config.val_dir = args.val_dir
+        config.use_wandb = args.wandb
+        config.compile_model = args.compile
+        config.resume = args.resume
+        config.required_gpu = args.required_gpu or None
+        config.generate_samples = args.generate_samples
+        if args.run_name is not None:
+            config.run_name = args.run_name
+        if args.checkpoint_dir is not None:
+            config.checkpoint_dir = args.checkpoint_dir
         if args.muon is not None:
             config.use_muon = args.muon
         if args.ema is not None:
             config.use_ema = args.ema
+        if args.eval_use_ema is not None:
+            config.eval_use_ema = args.eval_use_ema
         for key in (
             "max_steps",
+            "lr_decay_steps",
             "micro_batch_size",
             "grad_accumulation_steps",
             "num_workers",

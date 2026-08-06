@@ -32,15 +32,15 @@ JarvisLM treats each of these as a separately verifiable component.
 | Model and attention components | Complete | RMSNorm, SwiGLU, RoPE, causal attention, MHA/GQA options |
 | Full GPT model and loss | Complete | Unit-tested forward, generation, gradients, and parameter count |
 | Tokenization and binary shards | Complete | tiktoken GPT-2 and `uint16` FineWeb-Edu shards |
-| Training and checkpoint recovery | Complete | V1 AdamW baseline, bf16, cosine schedule, W&B, resume; Muon/EMA optional |
-| RunPod training workflow | Complete | CA-MTL-3 network volume, A100 gate, isolated H200 V1 run |
-| 350M pre-training results | Pending | Must be measured on the user's actual RunPod execution |
-| Muon / AdamW ablation | Pending | Requires fixed-data controlled experiment artifacts |
+| Training and checkpoint recovery | Complete | V1 AdamW and V2 Muon+AdamW/EMA recipes, bf16, cosine schedule, W&B, resume |
+| RunPod training workflow | Complete | Independent A100 gates and H200 checkpoint directories for V1 and V2 |
+| V1 pre-training baseline | Complete | H200, 10,500 updates / 5.505B tokens; validation loss 2.9440 |
+| V2 modern comparison | Ready to run | Same data, seed, batch, token budget, and V1 learning-rate trajectory |
 | KV cache and inference benchmark | In progress | Compare cached and uncached decoding |
 
 Only completed items are presented as completed. Training results and benchmark numbers will be added after reproducible runs are available.
 
-## Target architecture
+## V1 and V2 architectures
 
 The target experimental configuration follows a modern decoder-only Transformer design:
 
@@ -51,12 +51,17 @@ The target experimental configuration follows a modern decoder-only Transformer 
 | Hidden size (`d_model`) | 1,024 | Token representation width |
 | Transformer layers | 24 | Model depth |
 | Query heads | 16 | Multi-head attention |
-| KV heads | 16 | Reference V1 baseline uses standard MHA (GQA is optional) |
+| KV heads | 16 (V1) / 4 (V2) | V2 uses grouped-query attention |
 | Head dimension | 64 | `d_model / n_heads` |
 | FFN hidden dimension | 2,730 | `int(8 / 3 * d_model)` for SwiGLU |
 | Normalization | RMSNorm | Pre-normalization Transformer blocks |
 | Position encoding | RoPE | Rotary positional embeddings |
 | Attention backend | PyTorch SDPA | Causal attention with optimized kernels where available |
+
+V1 is the 353,502,208-parameter AdamW baseline. The independent
+`v2_modern` recipe has 315,758,848 parameters and enables GQA, QK-Norm,
+Differential Attention, Muon+AdamW, and EMA. It deliberately leaves mHC and
+XSA disabled because they were not part of the source project's final V2.
 
 The final parameter count will be calculated and recorded from the implemented model rather than claimed in advance. The approximately 350M target depends on the final attention and weight-tying choices.
 
@@ -187,8 +192,8 @@ The following experiments will be reported with the exact configuration, hardwar
 
 - **Mac (MPS):** unit tests and small, local component checks only.
 - **RunPod network volume:** persistent FineWeb-Edu shards, checkpoints, Hugging Face cache, and W&B logs.
-- **RunPod A100:** 1,000-step full-architecture V1 preflight through warmup.
-- **RunPod H200:** fresh 20,000-step V1 run after the A100 report passes; interrupted H200 runs resume in place.
+- **RunPod A100:** recipe-specific V1/V2 preflight gates.
+- **RunPod H200:** isolated, resumable V1 and V2 runs using the same prepared shards.
 
 The exact operational commands and failure safeguards are in
 [the RunPod 350M guide](docs/runpod_350m.md).
@@ -208,6 +213,7 @@ trade-offs with reproducible experiment artifacts.
 ## References and acknowledgements
 
 - John Enev, [*Building a 350M Transformer From Scratch*](https://john463212.substack.com/p/building-a-350m-transformer-from), and the associated [`modern-llm`](https://github.com/JohnEnev/modern-llm) V1 implementation used as the baseline recipe.
+- John Enev, [*Modernizing the Architecture*](https://john463212.substack.com/p/modernizing-the-architecture), used to define the final V2 feature set and rejected mHC ablation.
 - Zhang & Sennrich, *Root Mean Square Layer Normalization* (RMSNorm).
 - Shazeer, *GLU Variants Improve Transformer* (SwiGLU).
 - Su et al., *RoFormer* (RoPE).

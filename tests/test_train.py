@@ -9,6 +9,7 @@ from jarvislm.training.train import (
     REFERENCE_SAMPLE_PROMPTS,
     TARGET_TRAIN_TOKENS,
     TOKENS_PER_REFERENCE_STEP,
+    V2_COMPARISON_STEPS,
     TrainConfig,
     _prepare_data_if_requested,
     cosine_learning_rate,
@@ -46,6 +47,42 @@ def test_reference_350m_profile_matches_the_single_h200_recipe() -> None:
     assert config.required_gpu == "H200"
 
 
+def test_v2_modern_profile_matches_the_final_source_recipe_and_v1_budget() -> None:
+    config = TrainConfig.for_recipe("v2_modern")
+
+    assert config.model.vocab_size == 50_304
+    assert config.model.d_model == 1_024
+    assert config.model.n_layers == 24
+    assert config.model.n_heads == 16
+    assert config.model.n_kv_heads == 4
+    assert config.model.uses_gqa is True
+    assert config.model.use_qk_norm is True
+    assert config.model.use_diff_attn is True
+    assert config.model.use_mhc is False
+    assert config.model.use_xsa is False
+    assert config.use_muon is True
+    assert config.use_ema is True
+    assert config.eval_use_ema is True
+    assert config.max_steps == V2_COMPARISON_STEPS == 10_500
+    assert config.schedule_steps == 20_000
+    assert config.tokens_per_step == TOKENS_PER_REFERENCE_STEP
+    assert config.max_steps * config.tokens_per_step == 5_505_024_000
+
+    with torch.device("meta"):
+        model = GPT(config.model)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 315_758_848
+
+
+def test_v2_uses_the_same_learning_rate_at_step_10500_as_early_stopped_v1() -> None:
+    v1 = TrainConfig()
+    v2 = TrainConfig.for_recipe("v2_modern")
+
+    assert cosine_learning_rate(v2, 10_500) == pytest.approx(
+        cosine_learning_rate(v1, 10_500)
+    )
+    assert cosine_learning_rate(v2, 10_500) == pytest.approx(1.65e-4)
+
+
 def test_reference_schedule_warms_up_and_decays() -> None:
     config = TrainConfig.smoke()
     config.max_steps = 10
@@ -76,7 +113,9 @@ def test_checkpoint_resume_continues_completed_step(tmp_path) -> None:
     config.save_interval = 0
     config.use_muon = False
     config.validate()
-    tokens = torch.randint(0, config.model.vocab_size, (4, config.model.max_seq_len + 1))
+    tokens = torch.randint(
+        0, config.model.vocab_size, (4, config.model.max_seq_len + 1)
+    )
     dataset = TensorDataset(tokens[:, :-1], tokens[:, 1:])
     first = train(config, dataset)
 
@@ -93,7 +132,9 @@ def test_checkpoint_resume_skips_a_newer_unreadable_checkpoint(tmp_path) -> None
     config.checkpoint_dir = tmp_path / "checkpoints"
     config.max_steps = 1
     config.save_interval = 1
-    tokens = torch.randint(0, config.model.vocab_size, (4, config.model.max_seq_len + 1))
+    tokens = torch.randint(
+        0, config.model.vocab_size, (4, config.model.max_seq_len + 1)
+    )
     dataset = TensorDataset(tokens[:, :-1], tokens[:, 1:])
     train(config, dataset)
 
@@ -128,6 +169,51 @@ def test_fixed_prompt_generation_preserves_training_rng(monkeypatch) -> None:
     assert tuple(prompt for prompt, _ in samples) == REFERENCE_SAMPLE_PROMPTS
     assert torch.equal(torch.random.get_rng_state(), state_before)
     assert model.training is True
+
+
+def test_ema_recipe_logs_raw_and_ema_then_samples_from_ema(monkeypatch, capsys) -> None:
+    train_module = importlib.import_module("jarvislm.training.train")
+    evaluated_models = []
+    sampled_models = []
+
+    class FakeTokenizer:
+        def validate_model_vocab_size(self, vocab_size: int) -> None:
+            assert vocab_size == 128
+
+    def fake_evaluate(model, loader, device, batches):
+        del loader, device, batches
+        evaluated_models.append(model)
+        return 2.0 if len(evaluated_models) == 1 else 1.5
+
+    def fake_samples(model, tokenizer, prompts, **kwargs):
+        del tokenizer, kwargs
+        sampled_models.append(model)
+        return tuple((prompt, f"{prompt} completion") for prompt in prompts)
+
+    monkeypatch.setattr(train_module, "GPT2Tokenizer", FakeTokenizer)
+    monkeypatch.setattr(train_module, "evaluate", fake_evaluate)
+    monkeypatch.setattr(train_module, "generate_qualitative_samples", fake_samples)
+
+    config = TrainConfig.smoke()
+    config.max_steps = 1
+    config.eval_interval = 1
+    config.use_ema = True
+    config.eval_use_ema = True
+    config.generate_samples = True
+    config.sample_prompts = ("fixed prompt",)
+    config.validate()
+    tokens = torch.randint(
+        0, config.model.vocab_size, (4, config.model.max_seq_len + 1)
+    )
+    dataset = TensorDataset(tokens[:, :-1], tokens[:, 1:])
+
+    train(config, dataset, dataset)
+
+    output = capsys.readouterr().out
+    assert len(evaluated_models) == 2
+    assert sampled_models == [evaluated_models[1]]
+    assert "model EMA" in output
+    assert "validation raw" in output
 
 
 def test_data_preparation_requires_positive_token_budgets(tmp_path) -> None:

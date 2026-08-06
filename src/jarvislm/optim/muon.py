@@ -51,7 +51,10 @@ def newton_schulz(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     a, b, c = (3.4445, -4.7750, 2.0315)
 
     # Normalize so iteration starts in a numerically stable regime
-    X = M / M.norm()
+    # Dense Transformer matrices normally have non-zero gradients, but a
+    # completely zero gradient must remain a no-op instead of producing NaNs.
+    norm = M.norm().clamp_min(torch.finfo(M.dtype).eps)
+    X = M / norm
 
     # Each iteration applies: X = (a*I + b*(X@X.T) + c*(X@X.T)^2) @ X
     # This maps each singular value σ → a*σ + b*σ³ + c*σ⁵
@@ -83,7 +86,8 @@ def configure_optimizers(
         model: The GPT model
         lr: Learning rate for AdamW group
         muon_lr: Learning rate for Muon group (typically 0.5x lr)
-        weight_decay: L2 regularization, applied to both groups
+        weight_decay: AdamW weight decay. The source-faithful Muon group uses
+            its orthogonalized update without decoupled weight decay.
 
     Returns:
         (muon_optimizer, adamw_optimizer) — call .step() on both each training step
