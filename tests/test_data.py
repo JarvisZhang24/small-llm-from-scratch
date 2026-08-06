@@ -54,6 +54,29 @@ def test_prepare_streaming_dataset_appends_eot_and_honors_token_budget(tmp_path)
     assert np.fromfile(tmp_path / "shard_00000.bin", dtype=np.uint16).tolist() == [3, 99, 3]
 
 
+def test_prepare_streaming_dataset_closes_generator_after_token_budget(tmp_path) -> None:
+    state = {"closed": False}
+
+    def stream():
+        try:
+            yield {"text": "one"}
+            yield {"text": "two"}
+        finally:
+            state["closed"] = True
+
+    prepare_streaming_dataset(
+        output_dir=tmp_path,
+        dataset_name="unused-with-injected-stream",
+        text_field="text",
+        num_tokens=1,
+        shard_size=10,
+        tokenizer=FakeTokenizer(),
+        stream=stream(),
+    )
+
+    assert state["closed"] is True
+
+
 def test_fineweb_split_preparation_reserves_disjoint_documents(tmp_path) -> None:
     train_stats, val_stats = prepare_fineweb_edu_splits(
         tmp_path / "train",

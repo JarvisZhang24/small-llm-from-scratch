@@ -1,6 +1,7 @@
 """Stream text datasets into GPT-2 ``uint16`` training shards."""
 
 import argparse
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,13 @@ from jarvislm.tokenizer import GPT2Tokenizer
 
 class _Tokenizer(Protocol):
     def encode(self, text: str, add_eos: bool = False) -> list[int]: ...
+
+
+def _close_iterator(iterator: object) -> None:
+    """Close a streaming generator before Python begins interpreter shutdown."""
+    close = getattr(iterator, "close", None)
+    if callable(close):
+        close()
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,18 @@ def load_streaming_hf_dataset(
         kwargs["data_dir"] = data_dir
     if hf_token:
         kwargs["token"] = True
+    else:
+        # ``datasets`` does not load a repository .env itself.  Loading it here
+        # lets public FineWeb downloads use HF_TOKEN for higher Hub rate limits
+        # without logging or otherwise exposing the secret.
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except ImportError:
+            pass
+        if token := os.environ.get("HF_TOKEN"):
+            kwargs["token"] = token
     return load_dataset(**kwargs)
 
 
@@ -146,25 +166,29 @@ def prepare_streaming_dataset(
     writer = TokenShardWriter(output_dir, shard_size)
     seen = used = skipped = 0
 
-    for document in stream:
-        seen += 1
-        if text_field not in document:
-            raise KeyError(
-                f"text field {text_field!r} is absent; available keys: {list(document)}"
-            )
-        text = document[text_field]
-        if text is None:
-            skipped += 1
-            continue
-        text = str(text)
-        if len(text) < min_chars:
-            skipped += 1
-            continue
+    iterator = iter(stream)
+    try:
+        for document in iterator:
+            seen += 1
+            if text_field not in document:
+                raise KeyError(
+                    f"text field {text_field!r} is absent; available keys: {list(document)}"
+                )
+            text = document[text_field]
+            if text is None:
+                skipped += 1
+                continue
+            text = str(text)
+            if len(text) < min_chars:
+                skipped += 1
+                continue
 
-        writer.add_tokens(tokenizer.encode(text, add_eos=True), num_tokens)
-        used += 1
-        if writer.total_tokens == num_tokens:
-            break
+            writer.add_tokens(tokenizer.encode(text, add_eos=True), num_tokens)
+            used += 1
+            if writer.total_tokens == num_tokens:
+                break
+    finally:
+        _close_iterator(iterator)
 
     writer.flush()
     return PreparationStats(seen, used, skipped, writer.total_tokens, writer.shards_written)
@@ -211,25 +235,29 @@ def prepare_fineweb_edu_splits(
     val_writer = TokenShardWriter(val_dir, shard_size)
     seen = used = skipped = 0
 
-    for document in stream:
-        seen += 1
-        text = document.get("text")
-        if text is None:
-            skipped += 1
-            continue
-        token_ids = tokenizer.encode(str(text), add_eos=True)
-        if not token_ids:
-            skipped += 1
-            continue
-        writer, budget = (
-            (val_writer, val_tokens)
-            if val_writer.total_tokens < val_tokens
-            else (train_writer, train_tokens)
-        )
-        writer.add_tokens(token_ids, budget)
-        used += 1
-        if train_writer.total_tokens == train_tokens:
-            break
+    iterator = iter(stream)
+    try:
+        for document in iterator:
+            seen += 1
+            text = document.get("text")
+            if text is None:
+                skipped += 1
+                continue
+            token_ids = tokenizer.encode(str(text), add_eos=True)
+            if not token_ids:
+                skipped += 1
+                continue
+            writer, budget = (
+                (val_writer, val_tokens)
+                if val_writer.total_tokens < val_tokens
+                else (train_writer, train_tokens)
+            )
+            writer.add_tokens(token_ids, budget)
+            used += 1
+            if train_writer.total_tokens == train_tokens:
+                break
+    finally:
+        _close_iterator(iterator)
 
     val_writer.flush()
     train_writer.flush()
