@@ -26,6 +26,12 @@ class ModelConfig:
     bias: bool = False
     tie_weights: bool = True
     use_flash: bool = True
+    use_qk_norm: bool = True
+    use_diff_attn: bool = True
+    use_mhc: bool = True
+    n_streams: int = 2
+    mhc_every_n_layers: int = 1
+    use_xsa: bool = False
 
     def __post_init__(self) -> None:
         """Validate relationships between architecture hyperparameters."""
@@ -77,6 +83,20 @@ class ModelConfig:
 
         if self.rope_theta <= 0:
             raise ValueError("rope_theta must be positive")
+
+        if self.n_streams <= 0:
+            raise ValueError("n_streams must be positive")
+
+        if self.use_mhc and self.mhc_every_n_layers != 1:
+            raise ValueError(
+                "mhc_every_n_layers must be 1: mHC residual streams must "
+                "remain active through every Transformer block"
+            )
+
+        if self.use_diff_attn and head_dim % 4 != 0:
+            raise ValueError(
+                "head_dim must be divisible by 4 when using DifferentialAttention"
+            )
 
     @property
     def head_dim(self) -> int:

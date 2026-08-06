@@ -44,3 +44,18 @@ def test_gqa_head_count_must_be_valid() -> None:
 def test_rope_requires_an_even_head_dimension() -> None:
     with pytest.raises(ValueError, match="head_dim must be even"):
         ModelConfig(d_model=120, n_heads=8)
+
+
+def test_mhc_and_differential_attention_configuration_is_validated() -> None:
+    config = ModelConfig()
+
+    assert config.use_mhc is True
+    assert config.n_streams == 2
+    assert config.mhc_every_n_layers == 1
+
+    with pytest.raises(ValueError, match="n_streams"):
+        ModelConfig(n_streams=0)
+    with pytest.raises(ValueError, match="mhc_every_n_layers"):
+        ModelConfig(mhc_every_n_layers=2)
+    with pytest.raises(ValueError, match="divisible by 4"):
+        ModelConfig(d_model=24, n_heads=4, use_diff_attn=True)
