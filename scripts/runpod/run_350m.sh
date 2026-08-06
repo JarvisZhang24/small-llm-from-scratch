@@ -91,7 +91,9 @@ case "$command" in
     "$python_bin" "$repo_root/scripts/runpod/check_environment.py" \
       --stage preflight "${environment_args[@]}"
     "${verify_data[@]}"
-    preflight_root="$volume_root/runs/v1-a100-preflight"
+    # Use a fresh directory so an earlier conservative 2/256 preflight cannot
+    # be resumed into the source-faithful V1 16/32 batch configuration.
+    preflight_root="$volume_root/runs/v1-a100-preflight-mb16"
     mkdir -p "$preflight_root"
     preflight_steps="${JARVISLM_PREFLIGHT_STEPS:-1000}"
     set -o pipefail
@@ -100,7 +102,7 @@ case "$command" in
       --data-dir "$train_dir" --val-dir "$val_dir" \
       --checkpoint-dir "$preflight_root/checkpoints" \
       --max-steps "$preflight_steps" \
-      --micro-batch-size 2 --grad-accumulation-steps 256 --num-workers 2 \
+      --micro-batch-size 16 --grad-accumulation-steps 32 --num-workers 4 \
       --log-interval 10 --eval-interval 100 --save-interval 100 \
       --required-gpu A100 --compile --resume --no-muon --no-ema \
       "${wandb_args[@]}" 2>&1 | tee -a "$preflight_root/train.log"
@@ -115,7 +117,7 @@ case "$command" in
       --stage full "${environment_args[@]}"
     "${verify_data[@]}"
     "$python_bin" "$repo_root/scripts/runpod/require_preflight.py" \
-      --report "$volume_root/runs/v1-a100-preflight/preflight_report.json" \
+      --report "$volume_root/runs/v1-a100-preflight-mb16/preflight_report.json" \
       --expected-step "${JARVISLM_PREFLIGHT_STEPS:-1000}"
     full_root="$volume_root/runs/v1-h200-10b"
     mkdir -p "$full_root"

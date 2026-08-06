@@ -38,7 +38,7 @@ The persistent layout is:
 ├── repo/
 ├── data/fineweb-edu-v1-sample-10bt/{train,val,manifest.json}
 ├── cache/{huggingface,wandb}
-└── runs/{v1-a100-preflight,v1-h200-10b}
+└── runs/{v1-a100-preflight-mb16,v1-h200-10b}
 ```
 
 Prepare the 9,933,989,297/20M token train/validation split exactly once:
@@ -65,12 +65,13 @@ python -m pip install -e '.[dev]'
 scripts/runpod/run_350m.sh preflight
 ```
 
-This preserves the full 350M architecture, AdamW optimizer, and 524,288-token
-effective batch with `micro_batch=2` and `grad_accumulation=256`. It runs 1,000
+This uses the source-faithful V1 batch configuration: `micro_batch=16`,
+`grad_accumulation=32`, and 524,288 tokens per optimizer update. It runs 1,000
 updates so the V1 linear warmup reaches approximately its peak `3e-4` learning
-rate. It resumes from `runs/v1-a100-preflight/checkpoints/last.pt` after an
+rate. It resumes from `runs/v1-a100-preflight-mb16/checkpoints/last.pt` after an
 interruption and writes `train.log` plus `preflight_report.json` under
-`runs/v1-a100-preflight/`.
+`runs/v1-a100-preflight-mb16/`. The separate directory prevents checkpoints
+from the earlier conservative `2/256` diagnostic from entering this V1 gate.
 
 The report passes only when the 1,000-step checkpoint exists, at least 20 metric
 records are present, losses and gradient norms are finite, the final logged
