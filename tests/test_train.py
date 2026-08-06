@@ -53,7 +53,7 @@ def test_checkpoint_resume_continues_completed_step(tmp_path) -> None:
     config = TrainConfig.smoke()
     config.checkpoint_dir = tmp_path / "checkpoints"
     config.max_steps = 1
-    config.save_interval = 1
+    config.save_interval = 0
     config.use_muon = False
     config.validate()
     tokens = torch.randint(0, config.model.vocab_size, (4, config.model.max_seq_len + 1))

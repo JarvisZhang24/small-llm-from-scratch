@@ -315,8 +315,12 @@ def _checkpoint_paths(directory: Path) -> list[Path]:
 
 
 def find_latest_checkpoint(directory: str | Path) -> Path | None:
-    paths = _checkpoint_paths(Path(directory))
-    return paths[-1] if paths else None
+    directory = Path(directory)
+    paths = _checkpoint_paths(directory)
+    final_checkpoint = directory / "last.pt"
+    if final_checkpoint.is_file():
+        paths.append(final_checkpoint)
+    return max(paths, key=lambda path: path.stat().st_mtime) if paths else None
 
 
 def save_checkpoint(
