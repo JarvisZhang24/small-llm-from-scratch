@@ -32,8 +32,8 @@ JarvisLM treats each of these as a separately verifiable component.
 | Model and attention components | Complete | RMSNorm, SwiGLU, RoPE, causal attention, MHA/GQA options |
 | Full GPT model and loss | Complete | Unit-tested forward, generation, gradients, and parameter count |
 | Tokenization and binary shards | Complete | tiktoken GPT-2 and `uint16` FineWeb-Edu shards |
-| Training and checkpoint recovery | Complete | bf16, Muon + AdamW, cosine schedule, EMA, W&B, resume |
-| RunPod training workflow | Complete | CA-MTL-3 network volume, A100 gate, H200 continuation |
+| Training and checkpoint recovery | Complete | V1 AdamW baseline, bf16, cosine schedule, W&B, resume; Muon/EMA optional |
+| RunPod training workflow | Complete | CA-MTL-3 network volume, A100 gate, isolated H200 V1 run |
 | 350M pre-training results | Pending | Must be measured on the user's actual RunPod execution |
 | Muon / AdamW ablation | Pending | Requires fixed-data controlled experiment artifacts |
 | KV cache and inference benchmark | In progress | Compare cached and uncached decoding |
@@ -68,7 +68,7 @@ Token Embedding
    │
    ▼
 Transformer Block × 24
-   ├── RMSNorm → GQA + RoPE + causal attention → residual
+   ├── RMSNorm → MHA + RoPE + causal attention → residual
    └── RMSNorm → SwiGLU → residual
    │
    ▼
@@ -187,8 +187,8 @@ The following experiments will be reported with the exact configuration, hardwar
 
 - **Mac (MPS):** unit tests and small, local component checks only.
 - **RunPod network volume:** persistent FineWeb-Edu shards, checkpoints, Hugging Face cache, and W&B logs.
-- **RunPod A100:** 500-step full-architecture preflight before expensive training.
-- **RunPod H200:** resumed 10B-token single-GPU pre-training after the A100 report passes.
+- **RunPod A100:** 1,000-step full-architecture V1 preflight through warmup.
+- **RunPod H200:** fresh 20,000-step V1 run after the A100 report passes; interrupted H200 runs resume in place.
 
 The exact operational commands and failure safeguards are in
 [the RunPod 350M guide](docs/runpod_350m.md).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Persistent RunPod workflow for the reference V1 350M single-GPU recipe.
+# Persistent RunPod workflow for the historical V1 350M single-GPU recipe.
 set -euo pipefail
 
 usage() {
@@ -9,8 +9,8 @@ Usage: scripts/runpod/run_350m.sh {prepare|preflight|full}
 Environment (all optional):
   JARVISLM_VOLUME_ROOT=/workspace/jarvislm-350m
   JARVISLM_USE_WANDB=1
-  JARVISLM_PREFLIGHT_STEPS=500
-  JARVISLM_H200_STEPS=19074
+  JARVISLM_PREFLIGHT_STEPS=1000
+  JARVISLM_H200_STEPS=20000
 EOF
 }
 
@@ -22,7 +22,8 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 volume_root="${JARVISLM_VOLUME_ROOT:-/workspace/jarvislm-350m}"
-data_root="$volume_root/data/fineweb-edu"
+# Keep strict V1 assets separate from the earlier sample-100BT/Muon+EMA run.
+data_root="$volume_root/data/fineweb-edu-v1-sample-10bt"
 train_dir="$data_root/train"
 val_dir="$data_root/val"
 manifest="$data_root/manifest.json"
@@ -86,18 +87,19 @@ case "$command" in
     "$python_bin" "$repo_root/scripts/runpod/check_environment.py" \
       --stage preflight "${environment_args[@]}"
     "${verify_data[@]}"
-    preflight_root="$volume_root/runs/a100-preflight"
+    preflight_root="$volume_root/runs/v1-a100-preflight"
     mkdir -p "$preflight_root"
-    preflight_steps="${JARVISLM_PREFLIGHT_STEPS:-500}"
+    preflight_steps="${JARVISLM_PREFLIGHT_STEPS:-1000}"
     set -o pipefail
     "$python_bin" -m jarvislm.training.train \
-      --run-name jarvislm-350m-a100-preflight \
+      --recipe v1_350m --run-name jarvislm-v1-350m-a100-preflight \
       --data-dir "$train_dir" --val-dir "$val_dir" \
       --checkpoint-dir "$preflight_root/checkpoints" \
       --max-steps "$preflight_steps" \
       --micro-batch-size 2 --grad-accumulation-steps 256 --num-workers 2 \
       --log-interval 10 --eval-interval 100 --save-interval 100 \
-      --required-gpu A100 --compile --resume "${wandb_args[@]}" 2>&1 | tee -a "$preflight_root/train.log"
+      --required-gpu A100 --compile --resume --no-muon --no-ema \
+      "${wandb_args[@]}" 2>&1 | tee -a "$preflight_root/train.log"
     "$python_bin" "$repo_root/scripts/runpod/assess_preflight.py" \
       --log "$preflight_root/train.log" \
       --checkpoint "$preflight_root/checkpoints/last.pt" \
@@ -109,17 +111,17 @@ case "$command" in
       --stage full "${environment_args[@]}"
     "${verify_data[@]}"
     "$python_bin" "$repo_root/scripts/runpod/require_preflight.py" \
-      --report "$volume_root/runs/a100-preflight/preflight_report.json" \
-      --expected-step "${JARVISLM_PREFLIGHT_STEPS:-500}"
-    full_root="$volume_root/runs/h200-10b"
+      --report "$volume_root/runs/v1-a100-preflight/preflight_report.json" \
+      --expected-step "${JARVISLM_PREFLIGHT_STEPS:-1000}"
+    full_root="$volume_root/runs/v1-h200-10b"
     mkdir -p "$full_root"
     "$python_bin" -m jarvislm.training.train \
-      --run-name jarvislm-350m-h200-10b \
+      --recipe v1_350m --run-name jarvislm-v1-350m-h200-10b \
       --data-dir "$train_dir" --val-dir "$val_dir" \
       --checkpoint-dir "$full_root/checkpoints" \
-      --max-steps "${JARVISLM_H200_STEPS:-19074}" \
+      --max-steps "${JARVISLM_H200_STEPS:-20000}" \
       --micro-batch-size 16 --grad-accumulation-steps 32 --num-workers 4 \
       --log-interval 10 --eval-interval 500 --save-interval 1000 \
-      --required-gpu H200 --compile --resume "${wandb_args[@]}"
+      --required-gpu H200 --compile --resume --no-muon --no-ema "${wandb_args[@]}"
     ;;
 esac

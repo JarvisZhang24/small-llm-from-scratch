@@ -23,8 +23,15 @@ def test_reference_350m_profile_matches_the_single_h200_recipe() -> None:
     assert config.model.use_qk_norm is False
     assert config.model.use_diff_attn is False
     assert config.model.use_mhc is False
+    assert config.recipe_name == "v1_350m"
     assert config.tokens_per_step == TOKENS_PER_REFERENCE_STEP == 524_288
-    assert config.max_steps == 19_074
+    assert config.max_steps == 20_000
+    assert config.max_learning_rate == pytest.approx(3e-4)
+    assert config.min_learning_rate == pytest.approx(3e-5)
+    assert config.warmup_steps == 1_000
+    assert config.weight_decay == pytest.approx(0.1)
+    assert config.use_muon is False
+    assert config.use_ema is False
     assert config.required_gpu == "H200"
 
 
@@ -40,7 +47,7 @@ def test_reference_schedule_warms_up_and_decays() -> None:
     assert cosine_learning_rate(config, 10) == pytest.approx(1e-4)
 
 
-def test_cpu_smoke_test_runs_two_muon_updates() -> None:
+def test_cpu_smoke_test_runs_two_v1_adamw_updates() -> None:
     result = smoke_test()
 
     assert result.device == "cpu"

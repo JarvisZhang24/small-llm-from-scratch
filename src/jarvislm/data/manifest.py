@@ -8,7 +8,7 @@ import numpy as np
 
 MANIFEST_FORMAT_VERSION = 1
 FINEWEB_EDU_DATASET = "HuggingFaceFW/fineweb-edu"
-FINEWEB_EDU_SAMPLE = "sample-100BT"
+FINEWEB_EDU_SAMPLE = "sample-10BT"
 
 
 def count_uint16_tokens(directory: str | Path) -> tuple[int, tuple[Path, ...]]:

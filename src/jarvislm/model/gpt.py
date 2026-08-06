@@ -56,9 +56,11 @@ class GPT(nn.Module):
         else:
             self.register_parameter("final_read_logits", None)
 
-        self.apply(self._init_weights)
         if config.tie_weights:
             self.lm_head.weight = self.token_embeddings.weight
+        # Match the historical V1 initialization order.  The shared embedding
+        # is visited once as an Embedding and once as the tied Linear weight.
+        self.apply(self._init_weights)
 
     @staticmethod
     def _init_weights(module: nn.Module) -> None:

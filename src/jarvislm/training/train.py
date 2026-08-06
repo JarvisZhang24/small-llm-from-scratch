@@ -1,8 +1,8 @@
-"""Single-H200 training entry point for the JarvisLM-350M baseline.
+"""Single-GPU training entry point for the JarvisLM-350M V1 baseline.
 
 This module intentionally contains no DDP, multi-node, SFT, or 1.5B route.
-The default configuration reproduces the reference project's 350M architecture
-and optimization recipe, while its step count targets approximately 10B tokens.
+The default configuration reproduces the reference project's historical V1
+architecture and AdamW training recipe at commit ``74351e3``.
 """
 
 import argparse
@@ -26,6 +26,7 @@ from jarvislm.optim.muon import configure_optimizers
 
 TOKENS_PER_REFERENCE_STEP = 16 * 32 * 1_024
 TARGET_TRAIN_TOKENS = 10_000_000_000
+REFERENCE_V1_STEPS = 20_000
 
 
 def _reference_model_config() -> ModelConfig:
@@ -47,26 +48,28 @@ def _reference_model_config() -> ModelConfig:
 
 @dataclass
 class TrainConfig:
-    """Configuration for one 350M run on one NVIDIA H200 GPU."""
+    """Historical V1 configuration for one 350M single-GPU run."""
 
     model: ModelConfig = field(default_factory=_reference_model_config)
-    run_name: str = "jarvislm-350m"
-    data_dir: Path = Path("data/fineweb-edu/train")
-    val_dir: Path = Path("data/fineweb-edu/val")
+    recipe_name: str = "v1_350m"
+    run_name: str = "jarvislm-v1-350m"
+    data_dir: Path = Path("data/fineweb-edu-v1-sample-10bt/train")
+    val_dir: Path = Path("data/fineweb-edu-v1-sample-10bt/val")
 
     # 16 * 32 * 1,024 = 524,288 tokens/update, as in the reference recipe.
     micro_batch_size: int = 16
     grad_accumulation_steps: int = 32
-    max_steps: int = math.ceil(TARGET_TRAIN_TOKENS / TOKENS_PER_REFERENCE_STEP)
+    # The source V1 ran 20,000 updates: 10,485,760,000 scheduled tokens.
+    max_steps: int = REFERENCE_V1_STEPS
 
     max_learning_rate: float = 3e-4
     min_learning_rate: float = 3e-5
     muon_learning_rate: float = 1.5e-4
     weight_decay: float = 0.1
     grad_clip_norm: float = 1.0
-    use_muon: bool = True
+    use_muon: bool = False
 
-    use_ema: bool = True
+    use_ema: bool = False
     ema_decay: float = 0.9995
     warmup_steps: int = 1_000
     compile_model: bool = True
@@ -75,7 +78,7 @@ class TrainConfig:
     seed: int = 42
     num_workers: int = 4
 
-    checkpoint_dir: Path | None = Path("checkpoints/jarvislm-350m")
+    checkpoint_dir: Path | None = Path("checkpoints/jarvislm-v1-350m")
     save_interval: int = 1_000
     keep_last_checkpoints: int = 3
     resume: bool = True
@@ -132,6 +135,7 @@ class TrainConfig:
                 use_diff_attn=False,
                 use_mhc=False,
             ),
+            recipe_name="smoke",
             run_name="smoke",
             micro_batch_size=2,
             grad_accumulation_steps=1,
@@ -255,18 +259,16 @@ def _make_loader(
 
 
 def _batches_forever(
-    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]], count: int
-) -> Iterable[list[tuple[torch.Tensor, torch.Tensor]]]:
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+) -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
+    """Yield one batch at a time so loader prefetch can overlap GPU compute."""
     iterator = iter(loader)
     while True:
-        batches = []
-        for _ in range(count):
-            try:
-                batches.append(next(iterator))
-            except StopIteration:
-                iterator = iter(loader)
-                batches.append(next(iterator))
-        yield batches
+        try:
+            yield next(iterator)
+        except StopIteration:
+            iterator = iter(loader)
+            yield next(iterator)
 
 
 def _set_learning_rates(
@@ -345,6 +347,7 @@ def save_checkpoint(
         "model": model.state_dict(),
         "adamw": adamw.state_dict(),
         "model_config": asdict(config.model),
+        "train_config": asdict(config),
         "cpu_rng_state": torch.random.get_rng_state(),
     }
     if muon is not None:
@@ -353,7 +356,12 @@ def save_checkpoint(
         payload["ema"] = ema.state_dict()
     if torch.cuda.is_available():
         payload["cuda_rng_state"] = torch.cuda.get_rng_state_all()
-    torch.save(payload, checkpoint_path)
+    temporary_path = checkpoint_path.with_suffix(f"{checkpoint_path.suffix}.tmp")
+    try:
+        torch.save(payload, temporary_path)
+        temporary_path.replace(checkpoint_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return checkpoint_path
 
 
@@ -400,6 +408,7 @@ def _start_wandb(config: TrainConfig):
         project="jarvislm-350m",
         name=config.run_name,
         config={
+            "recipe_name": config.recipe_name,
             "model": asdict(config.model),
             "tokens_per_step": config.tokens_per_step,
             "max_steps": config.max_steps,
@@ -480,17 +489,17 @@ def train(
             print(f"Resumed from {latest} at completed step {start_step}")
 
     print(
-        f"JarvisLM-350M | parameters={parameter_count:,} | device={device} | "
-        f"tokens/update={config.tokens_per_step:,} | target steps={config.max_steps:,}"
+        f"JarvisLM-350M | recipe={config.recipe_name} | parameters={parameter_count:,} | "
+        f"device={device} | optimizer={'Muon+AdamW' if muon else 'AdamW'} | "
+        f"ema={'on' if ema else 'off'} | tokens/update={config.tokens_per_step:,} | "
+        f"target steps={config.max_steps:,}"
     )
     run = _start_wandb(config)
     started = time.perf_counter()
     metrics: list[TrainMetrics] = []
     try:
-        for step, microbatches in zip(
-            range(start_step, config.max_steps),
-            _batches_forever(train_loader, config.grad_accumulation_steps),
-        ):
+        batch_iterator = iter(_batches_forever(train_loader))
+        for step in range(start_step, config.max_steps):
             step_started = time.perf_counter()
             learning_rate = _set_learning_rates(adamw, muon, config, step)
             adamw.zero_grad(set_to_none=True)
@@ -498,7 +507,8 @@ def train(
                 muon.zero_grad(set_to_none=True)
 
             total_loss = 0.0
-            for inputs, targets in microbatches:
+            for _ in range(config.grad_accumulation_steps):
+                inputs, targets = next(batch_iterator)
                 inputs = inputs.to(device, non_blocking=True)
                 targets = targets.to(device, non_blocking=True)
                 context = (
@@ -588,16 +598,23 @@ def smoke_test(device: str = "cpu") -> TrainResult:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the single-H200 JarvisLM-350M recipe")
+    parser = argparse.ArgumentParser(description="Run the historical JarvisLM V1 350M recipe")
     parser.add_argument("--smoke", action="store_true", help="two CPU-safe integration updates")
     parser.add_argument("--prepare-data", action="store_true", help="stream FineWeb-Edu shards before training")
     parser.add_argument("--prepare-only", action="store_true", help="prepare shards, then exit without training")
     parser.add_argument("--prepare-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
     parser.add_argument("--prepare-val-tokens", type=int, default=20_000_000)
-    parser.add_argument("--run-name", default="jarvislm-350m")
-    parser.add_argument("--data-dir", type=Path, default=Path("data/fineweb-edu/train"))
-    parser.add_argument("--val-dir", type=Path, default=Path("data/fineweb-edu/val"))
-    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/jarvislm-350m"))
+    parser.add_argument("--recipe", choices=("v1_350m",), default="v1_350m")
+    parser.add_argument("--run-name", default="jarvislm-v1-350m")
+    parser.add_argument(
+        "--data-dir", type=Path, default=Path("data/fineweb-edu-v1-sample-10bt/train")
+    )
+    parser.add_argument(
+        "--val-dir", type=Path, default=Path("data/fineweb-edu-v1-sample-10bt/val")
+    )
+    parser.add_argument(
+        "--checkpoint-dir", type=Path, default=Path("checkpoints/jarvislm-v1-350m")
+    )
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--micro-batch-size", type=int)
     parser.add_argument("--grad-accumulation-steps", type=int)
@@ -610,6 +627,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--muon", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--ema", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--required-gpu", default="H200", help="GPU name required for CUDA training")
     args = parser.parse_args()
     if args.prepare_data and (
@@ -627,6 +646,7 @@ def main() -> None:
         result = smoke_test()
     else:
         config = TrainConfig(
+            recipe_name=args.recipe,
             run_name=args.run_name,
             data_dir=args.data_dir,
             val_dir=args.val_dir,
@@ -636,6 +656,10 @@ def main() -> None:
             resume=args.resume,
             required_gpu=args.required_gpu or None,
         )
+        if args.muon is not None:
+            config.use_muon = args.muon
+        if args.ema is not None:
+            config.use_ema = args.ema
         for key in (
             "max_steps",
             "micro_batch_size",

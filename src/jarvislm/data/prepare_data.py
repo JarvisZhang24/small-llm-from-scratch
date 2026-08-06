@@ -198,9 +198,9 @@ def prepare_fineweb_edu(
     output_dir: str | Path,
     num_tokens: int = 10_000_000_000,
     shard_size: int = 100_000_000,
-    sample: str = "sample-100BT",
+    sample: str = "sample-10BT",
 ) -> PreparationStats:
-    """Prepare the FineWeb-Edu training split used by the reference project."""
+    """Prepare the FineWeb-Edu sample used by the historical V1 project."""
     return prepare_streaming_dataset(
         output_dir, "HuggingFaceFW/fineweb-edu", "text", num_tokens, shard_size, name=sample
     )
@@ -213,7 +213,7 @@ def prepare_fineweb_edu_splits(
     train_tokens: int = 10_000_000_000,
     val_tokens: int = 20_000_000,
     shard_size: int = 100_000_000,
-    sample: str = "sample-100BT",
+    sample: str = "sample-10BT",
     tokenizer: _Tokenizer | None = None,
     stream: Iterable[Mapping[str, Any]] | None = None,
 ) -> tuple[PreparationStats, PreparationStats]:
@@ -222,7 +222,9 @@ def prepare_fineweb_edu_splits(
     FineWeb-Edu exposes a single ``train`` split.  Reserving complete documents
     for validation before writing training shards prevents data leakage without
     downloading the corpus twice.  The production defaults mirror the 350M
-    recipe: 10B train tokens in 100M-token ``uint16`` shards.
+    V1 recipe: ``sample-10BT`` with 10B train tokens in 100M-token
+    ``uint16`` shards.  The original repository did not publish its validation
+    preparation; JarvisLM reserves a deterministic, disjoint 20M-token split.
     """
     if train_tokens <= 0 or val_tokens <= 0:
         raise ValueError("train_tokens and val_tokens must be positive")
