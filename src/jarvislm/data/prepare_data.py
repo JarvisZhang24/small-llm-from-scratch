@@ -9,6 +9,11 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from jarvislm.data.manifest import (
+    FINEWEB_EDU_V1_TOTAL_TOKENS,
+    FINEWEB_EDU_V1_TRAIN_TOKENS,
+    FINEWEB_EDU_V1_VAL_TOKENS,
+)
 from jarvislm.tokenizer import GPT2Tokenizer
 
 
@@ -196,7 +201,7 @@ def prepare_streaming_dataset(
 
 def prepare_fineweb_edu(
     output_dir: str | Path,
-    num_tokens: int = 10_000_000_000,
+    num_tokens: int = FINEWEB_EDU_V1_TOTAL_TOKENS,
     shard_size: int = 100_000_000,
     sample: str = "sample-10BT",
 ) -> PreparationStats:
@@ -210,8 +215,8 @@ def prepare_fineweb_edu_splits(
     train_dir: str | Path,
     val_dir: str | Path,
     *,
-    train_tokens: int = 10_000_000_000,
-    val_tokens: int = 20_000_000,
+    train_tokens: int = FINEWEB_EDU_V1_TRAIN_TOKENS,
+    val_tokens: int = FINEWEB_EDU_V1_VAL_TOKENS,
     shard_size: int = 100_000_000,
     sample: str = "sample-10BT",
     tokenizer: _Tokenizer | None = None,
@@ -222,9 +227,10 @@ def prepare_fineweb_edu_splits(
     FineWeb-Edu exposes a single ``train`` split.  Reserving complete documents
     for validation before writing training shards prevents data leakage without
     downloading the corpus twice.  The production defaults mirror the 350M
-    V1 recipe: ``sample-10BT`` with 10B train tokens in 100M-token
-    ``uint16`` shards.  The original repository did not publish its validation
-    preparation; JarvisLM reserves a deterministic, disjoint 20M-token split.
+    V1 recipe: the complete approximately-10B ``sample-10BT`` stream in
+    100M-token ``uint16`` shards.  The original repository did not publish its
+    validation preparation; JarvisLM reserves a deterministic, disjoint 20M
+    tokens and trains on the remaining 9,933,989,297 tokens.
     """
     if train_tokens <= 0 or val_tokens <= 0:
         raise ValueError("train_tokens and val_tokens must be positive")
@@ -293,11 +299,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Write GPT-2 token shards")
     parser.add_argument("mode", choices=("fineweb", "generic", "dummy"))
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--num-tokens", type=int, default=10_000_000_000)
+    parser.add_argument("--num-tokens", type=int, default=FINEWEB_EDU_V1_TOTAL_TOKENS)
     parser.add_argument("--shard-size", type=int, default=100_000_000)
     parser.add_argument("--hf-token", action="store_true")
     parser.add_argument("--val-output-dir", type=Path)
-    parser.add_argument("--val-tokens", type=int, default=20_000_000)
+    parser.add_argument("--val-tokens", type=int, default=FINEWEB_EDU_V1_VAL_TOKENS)
     parser.add_argument("--dataset", type=str)
     parser.add_argument("--name", type=str)
     parser.add_argument("--split", type=str, default="train")

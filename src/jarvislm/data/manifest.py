@@ -9,6 +9,13 @@ import numpy as np
 MANIFEST_FORMAT_VERSION = 1
 FINEWEB_EDU_DATASET = "HuggingFaceFW/fineweb-edu"
 FINEWEB_EDU_SAMPLE = "sample-10BT"
+# ``sample-10BT`` is an approximate name.  Streaming the complete current
+# sample through the reference GPT-2 tokenizer (including one EOT per document)
+# yields this many tokens.  JarvisLM reserves the first 20M for validation and
+# uses the remainder for V1 pretraining.
+FINEWEB_EDU_V1_TOTAL_TOKENS = 9_953_989_297
+FINEWEB_EDU_V1_VAL_TOKENS = 20_000_000
+FINEWEB_EDU_V1_TRAIN_TOKENS = FINEWEB_EDU_V1_TOTAL_TOKENS - FINEWEB_EDU_V1_VAL_TOKENS
 
 
 def count_uint16_tokens(directory: str | Path) -> tuple[int, tuple[Path, ...]]:
@@ -124,6 +131,9 @@ def verify_fineweb_edu_manifest(
 __all__ = [
     "FINEWEB_EDU_DATASET",
     "FINEWEB_EDU_SAMPLE",
+    "FINEWEB_EDU_V1_TOTAL_TOKENS",
+    "FINEWEB_EDU_V1_TRAIN_TOKENS",
+    "FINEWEB_EDU_V1_VAL_TOKENS",
     "MANIFEST_FORMAT_VERSION",
     "build_fineweb_edu_manifest",
     "count_uint16_tokens",

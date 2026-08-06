@@ -61,6 +61,10 @@ case "$command" in
       exit 0
     fi
     if [[ -n "$(find "$train_dir" "$val_dir" -type f -name '*.bin' -print -quit 2>/dev/null)" ]]; then
+      if "${verify_data[@]}" --write; then
+        echo "Recovered complete V1 sample-10BT shards and wrote the missing manifest."
+        exit 0
+      fi
       echo "Found shards without $manifest. Refusing to mix partial data with a new run." >&2
       echo "Inspect or back up the directories before removing them manually." >&2
       exit 1

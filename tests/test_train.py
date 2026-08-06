@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import TensorDataset
 
 from jarvislm.training.train import (
+    TARGET_TRAIN_TOKENS,
     TOKENS_PER_REFERENCE_STEP,
     TrainConfig,
     _prepare_data_if_requested,
@@ -26,6 +27,7 @@ def test_reference_350m_profile_matches_the_single_h200_recipe() -> None:
     assert config.recipe_name == "v1_350m"
     assert config.tokens_per_step == TOKENS_PER_REFERENCE_STEP == 524_288
     assert config.max_steps == 20_000
+    assert TARGET_TRAIN_TOKENS == 9_933_989_297
     assert config.max_learning_rate == pytest.approx(3e-4)
     assert config.min_learning_rate == pytest.approx(3e-5)
     assert config.warmup_steps == 1_000

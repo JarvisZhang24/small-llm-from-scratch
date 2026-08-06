@@ -3,8 +3,10 @@
 JarvisLM follows the historical reference V1 recipe at source commit
 `74351e3`: 353,502,208 parameters, GPT-2 `uint16` FineWeb-Edu `sample-10BT`
 shards, full-parameter AdamW, no EMA, bf16, 20,000 updates, and 524,288 tokens
-per update. Run all cloud operations from a RunPod Pod with a network volume
-attached at `/workspace`.
+per update. The current complete sample contains 9,953,989,297 tokenized tokens;
+JarvisLM reserves 20M for validation and uses 9,933,989,297 for training. Run
+all cloud operations from a RunPod Pod with a network volume attached at
+`/workspace`.
 
 Use one network-volume data center that can supply both the A100 preflight Pod
 and the H200 full-training Pod. This project uses a 100 GB CA-MTL-3 network
@@ -39,16 +41,18 @@ The persistent layout is:
 └── runs/{v1-a100-preflight,v1-h200-10b}
 ```
 
-Prepare the 10B/20M token train/validation split exactly once:
+Prepare the 9,933,989,297/20M token train/validation split exactly once:
 
 ```bash
 scripts/runpod/run_350m.sh prepare
 ```
 
 This creates `manifest.json` only after both split directories contain their
-exact expected token counts. If a Pod ends during preparation, the script
-refuses to mix partial shards with a new run; inspect or back up that data
-before manually removing it and restarting preparation.
+exact expected token counts. The `sample-10BT` name is approximate; requesting
+10B training tokens in addition to validation exhausts the stream. If all
+9,933,989,297 training tokens and 20M validation tokens were already flushed,
+re-running `prepare` verifies them and creates the missing manifest without a
+download. Other partial shard sets are rejected.
 
 ## A100 1,000-step preflight
 
@@ -97,6 +101,6 @@ value makes the run a diagnostic override rather than the recorded V1 recipe.
 
 The reference repository did not publish how its validation directory was
 constructed. JarvisLM therefore records a transparent extension: it reserves a
-disjoint 20M-token validation split before writing the 10B training tokens. Do
+disjoint 20M-token validation split and trains on the remaining 9.934B tokens. Do
 not compare its absolute validation loss directly with an undocumented source
 split.

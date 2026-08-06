@@ -4,11 +4,12 @@ import argparse
 from pathlib import Path
 
 from jarvislm.data import (
+    FINEWEB_EDU_V1_TRAIN_TOKENS,
+    FINEWEB_EDU_V1_VAL_TOKENS,
     build_fineweb_edu_manifest,
     verify_fineweb_edu_manifest,
     write_manifest,
 )
-from jarvislm.training.train import TARGET_TRAIN_TOKENS
 
 
 def parse_args() -> argparse.Namespace:
@@ -16,8 +17,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--val-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
-    parser.add_argument("--val-tokens", type=int, default=20_000_000)
+    parser.add_argument("--train-tokens", type=int, default=FINEWEB_EDU_V1_TRAIN_TOKENS)
+    parser.add_argument("--val-tokens", type=int, default=FINEWEB_EDU_V1_VAL_TOKENS)
     parser.add_argument(
         "--write", action="store_true", help="create the manifest after validating shards"
     )

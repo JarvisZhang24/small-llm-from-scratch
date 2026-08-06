@@ -8,11 +8,19 @@ from jarvislm.data import (
     verify_fineweb_edu_manifest,
     write_manifest,
 )
-from jarvislm.data.manifest import FINEWEB_EDU_SAMPLE
+from jarvislm.data.manifest import (
+    FINEWEB_EDU_SAMPLE,
+    FINEWEB_EDU_V1_TOTAL_TOKENS,
+    FINEWEB_EDU_V1_TRAIN_TOKENS,
+    FINEWEB_EDU_V1_VAL_TOKENS,
+)
 
 
 def test_manifest_uses_historical_v1_fineweb_sample() -> None:
     assert FINEWEB_EDU_SAMPLE == "sample-10BT"
+    assert FINEWEB_EDU_V1_TOTAL_TOKENS == 9_953_989_297
+    assert FINEWEB_EDU_V1_VAL_TOKENS == 20_000_000
+    assert FINEWEB_EDU_V1_TRAIN_TOKENS == 9_933_989_297
 
 
 def write_tokens(directory, tokens: list[int]) -> None:

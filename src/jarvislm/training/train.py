@@ -20,12 +20,17 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from jarvislm.data import PretrainDataset, prepare_fineweb_edu_splits
+from jarvislm.data import (
+    FINEWEB_EDU_V1_TRAIN_TOKENS,
+    FINEWEB_EDU_V1_VAL_TOKENS,
+    PretrainDataset,
+    prepare_fineweb_edu_splits,
+)
 from jarvislm.model import GPT, ModelConfig
 from jarvislm.optim.muon import configure_optimizers
 
 TOKENS_PER_REFERENCE_STEP = 16 * 32 * 1_024
-TARGET_TRAIN_TOKENS = 10_000_000_000
+TARGET_TRAIN_TOKENS = FINEWEB_EDU_V1_TRAIN_TOKENS
 REFERENCE_V1_STEPS = 20_000
 
 
@@ -603,7 +608,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepare-data", action="store_true", help="stream FineWeb-Edu shards before training")
     parser.add_argument("--prepare-only", action="store_true", help="prepare shards, then exit without training")
     parser.add_argument("--prepare-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
-    parser.add_argument("--prepare-val-tokens", type=int, default=20_000_000)
+    parser.add_argument(
+        "--prepare-val-tokens", type=int, default=FINEWEB_EDU_V1_VAL_TOKENS
+    )
     parser.add_argument("--recipe", choices=("v1_350m",), default="v1_350m")
     parser.add_argument("--run-name", default="jarvislm-v1-350m")
     parser.add_argument(

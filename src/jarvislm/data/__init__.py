@@ -2,6 +2,9 @@
 
 from jarvislm.data.dataset import PretrainDataset
 from jarvislm.data.manifest import (
+    FINEWEB_EDU_V1_TOTAL_TOKENS,
+    FINEWEB_EDU_V1_TRAIN_TOKENS,
+    FINEWEB_EDU_V1_VAL_TOKENS,
     build_fineweb_edu_manifest,
     count_uint16_tokens,
     verify_fineweb_edu_manifest,
@@ -17,6 +20,9 @@ from jarvislm.data.prepare_data import (
 )
 
 __all__ = [
+    "FINEWEB_EDU_V1_TOTAL_TOKENS",
+    "FINEWEB_EDU_V1_TRAIN_TOKENS",
+    "FINEWEB_EDU_V1_VAL_TOKENS",
     "PreparationStats",
     "PretrainDataset",
     "TokenShardWriter",
