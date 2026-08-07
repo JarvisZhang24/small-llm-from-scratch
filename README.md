@@ -1,227 +1,301 @@
 # JarvisLM
 
-> A decoder-only language model built from core components, with a reproducible pre-training and inference-optimization roadmap.
+> A native-PyTorch reproduction and controlled modernization study of a
+> decoder-only language model at the 350M-parameter scale.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.2%2B-ee4c2c)
-![Status](https://img.shields.io/badge/status-active%20development-f59e0b)
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.2%2B-ee4c2c)](https://pytorch.org/)
+![Tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
+![Tokens](https://img.shields.io/badge/pretraining-5.505B%20tokens%20%C3%97%202-success)
+[![W&B Report](https://img.shields.io/badge/W%26B-public%20report-FFBE00)](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
 
-## Overview
+JarvisLM is an independently implemented language-model training stack built
+from core PyTorch modules rather than an off-the-shelf trainer. It contains a
+353.5M-parameter V1 baseline and a 315.8M-parameter V2 Modern treatment that
+adds grouped-query attention (GQA), QK-Norm, Differential Attention, a
+Muon/AdamW optimizer split, and exponential moving average (EMA) weights.
 
-JarvisLM is a learning-driven systems project that rebuilds a small decoder-only Transformer step by step, then scales the implementation to a roughly 350M-parameter pre-training run. The goal is not to wrap an existing LLM trainer: it is to understand, implement, test, and benchmark the core pieces of an LLM training stack.
+Both models were trained from scratch on the same FineWeb-Edu split for 10,500
+optimizer updates on one NVIDIA H200 SXM. Each run processed exactly
+5,505,024,000 scheduled tokens with the same 1,024-token context length and
+524,288 tokens/update global batch.
 
-The project starts with individually testable model components, then adds data sharding, distributed training, checkpoint recovery, evaluation, and inference optimization.
+## Results at a glance
 
-## Why this project
+At the matched stopping point, V2 used **10.7% fewer parameters** and achieved
+lower validation loss than V1. Its raw weights improved loss by **0.0306** and
+perplexity by **3.0%**; EMA further improved the final result to **2.8925 loss /
+18.04 PPL**. The trade-off was an approximately **30.9% reduction in measured
+single-H200 throughput**.
 
-Training a language model is an end-to-end engineering problem. A reliable implementation needs more than a Transformer forward pass:
+| Metric at step 10,500 | V1 Base | V2 Modern Raw | V2 Modern EMA |
+| --- | ---: | ---: | ---: |
+| Parameters | 353,502,208 | 315,758,848 | 315,758,848 |
+| Scheduled tokens | 5,505,024,000 | 5,505,024,000 | 5,505,024,000 |
+| Validation loss | 2.9440 | 2.9134 | **2.8925** |
+| Validation perplexity | 18.99 | 18.42 | **18.04** |
+| Typical throughput | ~164k tokens/s | ~113.4k tokens/s | N/A |
+| Optimizer | AdamW | Muon + AdamW | Shadow weights only |
 
-- correct tensor shapes and causal masking;
-- numerically stable normalization and mixed-precision behavior;
-- streaming tokenized data and reproducible train/validation splits;
-- optimizer, learning-rate schedule, checkpointing, and restart recovery;
-- experiment tracking, evaluation, and latency/throughput measurement.
+The loss and perplexity values above use the same deterministic held-out data
+and fixed 20-batch online validation protocol. V1 has no EMA; the fair
+architecture/optimizer comparison is therefore **V1 Base vs V2 Modern Raw**.
+V2 EMA is reported separately as the best final weight candidate.
 
-JarvisLM treats each of these as a separately verifiable component.
+**Experiment artifacts:**
+[public W&B report](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
+· [Hugging Face model](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
+· [`artifacts/training_charts`](artifacts/training_charts)
 
-## Current status
+## The V2 bundle converged faster with fewer parameters
 
-| Area | Status | Notes |
-| --- | --- | --- |
-| Python package and editable installation | Complete | `src/` package layout with `pyproject.toml` |
-| Model and attention components | Complete | RMSNorm, SwiGLU, RoPE, causal attention, MHA/GQA options |
-| Full GPT model and loss | Complete | Unit-tested forward, generation, gradients, and parameter count |
-| Tokenization and binary shards | Complete | tiktoken GPT-2 and `uint16` FineWeb-Edu shards |
-| Training and checkpoint recovery | Complete | V1 AdamW and V2 Muon+AdamW/EMA recipes, bf16, cosine schedule, W&B, resume |
-| RunPod training workflow | Complete | Independent A100 gates and H200 checkpoint directories for V1 and V2 |
-| V1 pre-training baseline | Complete | H200, 10,500 updates / 5.505B tokens; validation loss 2.9440 |
-| V2 modern comparison | Ready to run | Same data, seed, batch, token budget, and V1 learning-rate trajectory |
-| KV cache and inference benchmark | In progress | Compare cached and uncached decoding |
+V2 starts from a different parameterization, so the initial losses are not
+expected to match exactly. After the early transient, its training curve stays
+below V1 and finishes with a lower raw validation loss despite having 37.7M
+fewer parameters.
 
-Only completed items are presented as completed. Training results and benchmark numbers will be added after reproducible runs are available.
+![V1 and V2 training loss](artifacts/training_charts/v1_v2_training_loss.png)
 
-## V1 and V2 architectures
+The V2 raw validation curve decreases smoothly to 2.9134. Because W&B logged
+V1's primary validation metric as `validation/loss` and V2 raw validation as
+`validation/raw_loss`, the exact matched result is given in the table above
+rather than presented as a misleading same-key overlay.
 
-The target experimental configuration follows a modern decoder-only Transformer design:
+<p align="center">
+  <img src="artifacts/training_charts/v2_raw_validation_loss.png" alt="V2 raw validation loss" width="49%">
+  <img src="artifacts/training_charts/v1_raw_v2_ema_validation_loss.png" alt="V1 raw and V2 EMA validation loss" width="49%">
+</p>
 
-| Hyperparameter | Target value | Purpose |
-| --- | ---: | --- |
-| Vocabulary size | 50,304 | Padded GPT-2 tokenizer vocabulary |
-| Context length | 1,024 | Maximum training and generation context |
-| Hidden size (`d_model`) | 1,024 | Token representation width |
-| Transformer layers | 24 | Model depth |
-| Query heads | 16 | Multi-head attention |
-| KV heads | 16 (V1) / 4 (V2) | V2 uses grouped-query attention |
-| Head dimension | 64 | `d_model / n_heads` |
-| FFN hidden dimension | 2,730 | `int(8 / 3 * d_model)` for SwiGLU |
-| Normalization | RMSNorm | Pre-normalization Transformer blocks |
-| Position encoding | RoPE | Rotary positional embeddings |
-| Attention backend | PyTorch SDPA | Causal attention with optimized kernels where available |
+The right-hand figure intentionally compares different weight types: V1 raw
+and V2 EMA. It shows EMA's slow early catch-up and late advantage, but it is
+not used as the fair V1/V2 raw comparison.
 
-V1 is the 353,502,208-parameter AdamW baseline. The independent
-`v2_modern` recipe has 315,758,848 parameters and enables GQA, QK-Norm,
-Differential Attention, Muon+AdamW, and EMA. It deliberately leaves mHC and
-XSA disabled because they were not part of the source project's final V2.
+## The quality gain came with a throughput cost
 
-The final parameter count will be calculated and recorded from the implemented model rather than claimed in advance. The approximately 350M target depends on the final attention and weight-tying choices.
+V1 sustained approximately 164k tokens/s at about 3.2 seconds/update. V2
+sustained approximately 113.4k tokens/s at about 4.6 seconds/update. The V2
+cost is consistent with its more expensive Differential Attention path and
+additional optimizer/EMA work, but this experiment evaluates the complete
+V2 system rather than isolating the cost of each component.
 
-```text
-Token IDs
-   │
-   ▼
-Token Embedding
-   │
-   ▼
-Transformer Block × 24
-   ├── RMSNorm → MHA + RoPE + causal attention → residual
-   └── RMSNorm → SwiGLU → residual
-   │
-   ▼
-Final RMSNorm → tied LM head → vocabulary logits
+<p align="center">
+  <img src="artifacts/training_charts/v1_v2_throughput.png" alt="V1 and V2 H200 training throughput" width="49%">
+  <img src="artifacts/training_charts/v1_v2_step_time.png" alt="V1 and V2 training step time" width="49%">
+</p>
+
+V1 used a 32-sequence micro-batch with 16 accumulation steps; the reported V2
+run used a 64-sequence micro-batch with 8 accumulation steps. Both preserve
+the same 512 sequences/update global batch. Consequently, the throughput
+numbers are practical end-to-end measurements of the two tuned run
+configurations, not a strict architecture-only microbenchmark.
+
+## Training remained numerically stable
+
+Both runs completed without non-finite loss, gradient explosion, or checkpoint
+recovery failure. V2's gradient norm is somewhat higher through the middle of
+training but decays smoothly and remains bounded.
+
+![V1 and V2 gradient norm](artifacts/training_charts/v1_v2_gradient_norm.png)
+
+## What is implemented
+
+### Model
+
+- Decoder-only, pre-normalization Transformer with a tied token embedding and
+  language-model head.
+- RMSNorm, RoPE, SwiGLU, causal masking, PyTorch scaled dot-product attention,
+  and GPT-2-compatible tokenization.
+- V1: 16-query/16-KV-head multi-head attention.
+- V2: 16-query/4-KV-head GQA, QK-Norm, and Differential Attention.
+- Padded 50,304-logit model vocabulary with invalid padded IDs excluded during
+  sampling.
+
+### Optimization and training
+
+- bf16 autocast with FP32 model parameters, gradient accumulation, gradient
+  clipping, cosine LR decay, and `torch.compile`.
+- AdamW for V1; Muon with Newton-Schulz orthogonalization for eligible V2 2D
+  attention/MLP matrices and AdamW for embeddings, normalization parameters,
+  biases, and scalar parameters.
+- EMA shadow weights updated after every V2 optimizer step.
+- Raw and EMA validation, deterministic fixed-prompt generation, and W&B
+  telemetry for loss, LR, gradient norm, throughput, and step time.
+
+### Reliability
+
+- Atomic checkpoint writes through a temporary file followed by rename.
+- Full recovery state: raw model, optional EMA model, AdamW/Muon optimizer
+  states, configuration, completed step, and CPU/CUDA RNG state.
+- Resume scans checkpoints by recency and can fall back from a truncated newest
+  checkpoint to the previous readable checkpoint.
+- Fixed-prompt generation forks the RNG so qualitative evaluation does not
+  perturb subsequent training randomness.
+- RunPod preflight gates verify GPU type, credentials, prepared-data manifest,
+  and a completed A100 smoke run before an H200 launch.
+
+## Experimental design
+
+The comparison changes the V2 architecture and optimizer as one treatment
+bundle while holding the main data and optimization budget constant.
+
+| Configuration | V1 Base | V2 Modern |
+| --- | ---: | ---: |
+| Parameters | 353,502,208 | 315,758,848 |
+| Layers / hidden size | 24 / 1,024 | 24 / 1,024 |
+| Context length | 1,024 | 1,024 |
+| Query heads / KV heads | 16 / 16 | 16 / 4 |
+| Attention | MHA | GQA + Differential Attention |
+| QK-Norm | Off | On |
+| Optimizer | AdamW | Muon + AdamW |
+| EMA | Off | On, decay 0.9995 |
+| Micro-batch / accumulation | 32 / 16 | 64 / 8 |
+| Global batch | 524,288 tokens/update | 524,288 tokens/update |
+| Updates | 10,500 | 10,500 |
+| Token budget | 5,505,024,000 | 5,505,024,000 |
+| AdamW peak / minimum LR | 3e-4 / 3e-5 | 3e-4 / 3e-5 |
+| Muon peak LR | N/A | 1.5e-4 |
+| Warmup / cosine horizon | 1,000 / 20,000 updates | 1,000 / 20,000 updates |
+| Random seed | 42 | 42 |
+| Hardware | 1× NVIDIA H200 SXM | 1× NVIDIA H200 SXM |
+
+The 20,000-update schedule horizon is intentionally longer than the 10,500
+update comparison window. Both runs stop on the same point of the AdamW LR
+curve; V2 additionally schedules Muon's LR over the same horizon.
+
+This design supports a **bundle-level descriptive comparison**. It does not
+identify the individual causal contribution of GQA, QK-Norm, Differential
+Attention, Muon, or EMA. Component-level attribution would require separate
+ablation runs.
+
+## Data and metric definitions
+
+JarvisLM uses the GPT-2 tokenizer and the FineWeb-Edu `sample-10BT` stream.
+Documents are tokenized with an end-of-text token and written to little-endian
+`uint16` binary shards before training.
+
+| Data field | Value |
+| --- | ---: |
+| Prepared tokenized corpus | 9,953,989,297 tokens |
+| Deterministic training pool | 9,933,989,297 tokens |
+| Held-out validation split | 20,000,000 tokens |
+| Sequence length | 1,024 tokens |
+| Storage | Little-endian `uint16` shards |
+| Tokens consumed per run | 5,505,024,000 scheduled tokens |
+
+- **Scheduled tokens** are `updates × tokens/update`; they are not a claim that
+  the complete FineWeb-Edu `sample-10BT` pool was consumed.
+- **Raw weights** are the parameters directly updated by AdamW or
+  Muon/AdamW.
+- **EMA weights** are a non-trainable exponential moving average of V2's raw
+  weights with decay 0.9995.
+- **Validation loss/PPL** are next-token cross-entropy and its exponential,
+  measured on the same deterministic 20-batch validation protocol.
+- **Throughput** is scheduled training tokens divided by optimizer-step time;
+  evaluation, sample generation, and checkpoint I/O are outside the steady
+  training-step measurement.
+
+## System overview
+
+```mermaid
+flowchart LR
+    A["FineWeb-Edu documents"] --> B["GPT-2 tokenization + EOT"]
+    B --> C["uint16 train/validation shards"]
+    C --> D["Prefetched DataLoader"]
+    D --> E["V1 Base or V2 Modern GPT"]
+    E --> F["bf16 forward/backward"]
+    F --> G["AdamW or Muon + AdamW"]
+    G --> H["Atomic raw + EMA checkpoints"]
+    E --> I["Raw/EMA validation + samples"]
+    F --> J["W&B telemetry"]
+    I --> J
 ```
 
-## Repository structure
+## Reproducing the project
 
-```text
-.
-├── src/
-│   └── jarvislm/
-│       ├── __init__.py
-│       └── model/
-│           ├── config.py       # Model architecture configuration
-│           ├── rmsnorm.py      # RMSNorm implementation
-│           ├── swiglu.py       # SwiGLU implementation (in progress)
-│           ├── rope.py         # Rotary position embeddings (planned)
-│           ├── attention.py    # Causal GQA attention (planned)
-│           ├── block.py        # Transformer block (planned)
-│           └── gpt.py          # Decoder-only language model (planned)
-├── tests/                      # Component-level unit tests
-├── configs/                    # Training YAML configurations (planned)
-├── scripts/                    # Data, training, evaluation commands (planned)
-├── docs/                       # Experiment reports and figures (planned)
-└── pyproject.toml
-```
-
-## Quick start
-
-### 1. Create the environment
+### Install and test
 
 ```bash
 conda create -n jarvislm python=3.11 pip -y
 conda activate jarvislm
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-```
+python -m pip install -e '.[dev]'
 
-### 2. Run tests
-
-```bash
-pytest -v
+PYTHONPATH=src pytest -q
 ruff check .
 ```
 
-### 3. Check local acceleration on Apple Silicon
+The recorded test suite contains 89 passing tests covering model components,
+causal behavior, GQA/Differential Attention, data manifests, Muon parameter
+partitioning, EMA selection, checkpoint recovery, and the training smoke path.
+
+### RunPod stages
 
 ```bash
-python -c "import torch; print(torch.backends.mps.is_available())"
+# Prepare and verify the shared FineWeb-Edu shards once.
+scripts/runpod/run_350m.sh prepare
+
+# V1 baseline.
+scripts/runpod/run_350m.sh preflight
+scripts/runpod/run_350m.sh full
+
+# V2 Modern.
+scripts/runpod/run_v2_modern.sh preflight
+scripts/runpod/run_v2_modern.sh full
 ```
 
-`True` means the local Mac can be used for unit tests and small-scale smoke runs. Long pre-training runs will use a CUDA cloud GPU.
+The published V2 H200 result used `--micro-batch-size 64` and
+`--grad-accumulation-steps 8`. Preserve those values when reproducing its
+reported throughput. See [`docs/runpod_350m.md`](docs/runpod_350m.md) for the
+persistent-volume layout, environment variables, preflight gates, and recovery
+workflow.
 
-## Implemented components
-
-### ModelConfig
-
-`ModelConfig` is the single source of truth for architecture parameters. It validates relationships that would otherwise fail later inside tensor operations:
-
-- `d_model` must be divisible by `n_heads`;
-- `n_heads` must be divisible by `n_kv_heads` for GQA;
-- the per-head dimension must be even for RoPE;
-- dropout, epsilon, vocabulary size, and context length must be valid.
-
-### RMSNorm
-
-For an input vector \(x\) along the hidden dimension:
-
-\[
-\operatorname{RMS}(x) = \sqrt{\operatorname{mean}(x^2) + \epsilon}
-\]
-
-\[
-\operatorname{RMSNorm}(x) = \gamma \odot \frac{x}{\operatorname{RMS}(x)}
-\]
-
-The implementation is covered by tests for output shape, the manual formula, gradients, and invalid arguments.
-
-## Development and verification plan
-
-The implementation order is intentional. Each stage has an observable correctness check before the next stage is started.
-
-1. `ModelConfig` and package installation — configuration tests pass.
-2. RMSNorm — manual-formula and gradient tests pass.
-3. SwiGLU — manual-formula and shape tests pass.
-4. RoPE — rotation-preserves-norm test passes.
-5. Causal attention — output-shape test and future-token leakage test pass.
-6. Transformer block and GPT — one-batch overfitting loss drops below a predefined threshold.
-7. Data pipeline — token shard boundaries and deterministic validation split are verified.
-8. Trainer — checkpoint save/resume reproduces the next training step.
-9. Small-model smoke run — local MPS/CUDA loss curve and generated samples are recorded.
-10. Cloud pre-training — fixed configuration, token budget, checkpoints, and W&B run are published.
-11. Ablations — compare optimizer and attention/inference choices under controlled settings.
-
-## Planned experiments
-
-The following experiments will be reported with the exact configuration, hardware, seed, token budget, and command used.
-
-| Experiment | Comparison | Metrics |
-| --- | --- | --- |
-| Optimizer | AdamW vs. Muon | validation loss, tokens/s, stability |
-| Attention | MHA vs. GQA | parameter count, memory, tokens/s, validation loss |
-| Inference | cached vs. uncached decoding | prefill latency, decode tokens/s, peak memory |
-| Context | 512 vs. 1,024 tokens | throughput and validation loss |
-
-## Reproducibility principles
-
-- Keep model, data, and training parameters in version-controlled configuration files.
-- Record random seed, tokenizer version, dataset revision, total tokens, hardware, and software versions.
-- Store model state, optimizer state, scheduler state, step, and random-number-generator state in checkpoints.
-- Publish training curves and generated examples alongside the corresponding checkpoint.
-- Never report benchmark, speed, or parameter-count claims without a script and a run artifact.
-
-## Compute plan
-
-- **Mac (MPS):** unit tests and small, local component checks only.
-- **RunPod network volume:** persistent FineWeb-Edu shards, checkpoints, Hugging Face cache, and W&B logs.
-- **RunPod A100:** recipe-specific V1/V2 preflight gates.
-- **RunPod H200:** isolated, resumable V1 and V2 runs using the same prepared shards.
-
-The exact operational commands and failure safeguards are in
-[the RunPod 350M guide](docs/runpod_350m.md).
-
-## Resume-ready project description
-
-Use this only after the claimed parts have been completed and documented:
+## Repository layout
 
 ```text
-JarvisLM: Built a decoder-only language-model training stack from core PyTorch
-components; implemented RMSNorm, RoPE, SwiGLU, causal/GQA attention, token
-sharding, checkpoint recovery, and inference KV caching. Trained and evaluated
-an approximately 350M-parameter model, and benchmarked optimizer and decoding
-trade-offs with reproducible experiment artifacts.
+.
+├── artifacts/training_charts/ # exported W&B evidence
+├── docs/runpod_350m.md         # RunPod preparation and training guide
+├── scripts/
+│   ├── generate_samples.py
+│   └── runpod/                 # environment, data, preflight, V1/V2 launchers
+├── src/jarvislm/
+│   ├── data/                   # streaming preparation, shards, manifests
+│   ├── inference/              # checkpoint loading and safe sampling
+│   ├── model/                  # GPT, attention, RoPE, RMSNorm, SwiGLU
+│   ├── optim/                  # Muon and optimizer partitioning
+│   ├── tokenizer/              # GPT-2 tokenizer wrapper
+│   └── training/               # trainer, EMA, checkpoints, preflight logic
+└── tests/                      # component and integration tests
 ```
 
-## References and acknowledgements
+## Limitations and interpretation
 
-- John Enev, [*Building a 350M Transformer From Scratch*](https://john463212.substack.com/p/building-a-350m-transformer-from), and the associated [`modern-llm`](https://github.com/JohnEnev/modern-llm) V1 implementation used as the baseline recipe.
-- John Enev, [*Modernizing the Architecture*](https://john463212.substack.com/p/modernizing-the-architecture), used to define the final V2 feature set and rejected mHC ablation.
-- Zhang & Sennrich, *Root Mean Square Layer Normalization* (RMSNorm).
-- Shazeer, *GLU Variants Improve Transformer* (SwiGLU).
-- Su et al., *RoFormer* (RoPE).
+- The reported runs process 5.505B scheduled tokens each; neither is described
+  as a completed 10B-token training run.
+- Final loss/PPL values are the trainer's deterministic 20-batch validation
+  measurements rather than benchmark-grade full-validation estimates.
+- V2 is a bundled intervention. These experiments do not establish that Muon,
+  Differential Attention, or any other individual component caused the full
+  observed improvement.
+- V1 and V2 use different micro-batch/accumulation decompositions at the same
+  global batch, so throughput is an end-to-end tuned-system comparison rather
+  than an isolated kernel benchmark.
+- Fixed-prompt generations show coherent local English by the end of training,
+  but factuality, code generation, and instruction following remain limited in
+  the pre-trained base models.
+
+## References and attribution
+
+- John Enev, [*Building a 350M Transformer From Scratch*](https://john463212.substack.com/p/building-a-350m-transformer-from).
+- John Enev, [*Modernizing the Architecture*](https://john463212.substack.com/p/modernizing-the-architecture).
+- The associated [`modern-llm`](https://github.com/JohnEnev/modern-llm)
+  repository, used as the behavioral reference for the V1/V2 reproduction.
+- Zhang and Sennrich, *Root Mean Square Layer Normalization*.
+- Shazeer, *GLU Variants Improve Transformer*.
+- Su et al., *RoFormer*.
 - Ainslie et al., *GQA: Training Generalized Multi-Query Transformer Models*.
-- Loshchilov & Hutter, *Decoupled Weight Decay Regularization* (AdamW).
 
-This repository is an independent educational implementation. When external repositories, papers, datasets, or code patterns are used as references, they will be credited in the relevant source file and experiment report.
-
-## License
-
-License selection is pending. Do not reuse the code as a dependency until a license file is added.
+This repository is an independent educational and engineering reproduction.
+Reference-project metrics are not presented as JarvisLM results; only locally
+measured checkpoints and runs are reported above.
