@@ -88,7 +88,7 @@ case "$command" in
       --data-dir "$train_dir" --val-dir "$val_dir" \
       --checkpoint-dir "$full_root/checkpoints" \
       --max-steps "${JARVISLM_V2_STEPS:-10500}" \
-      --micro-batch-size 32 --grad-accumulation-steps 16 --num-workers 8 \
+      --micro-batch-size 64 --grad-accumulation-steps 8 --num-workers 8 \
       --log-interval 10 --eval-interval 500 --save-interval 1000 \
       --required-gpu H200 --compile --resume --muon --ema --eval-use-ema \
       "${wandb_args[@]}" 2>&1 | tee -a "$full_root/train.log"

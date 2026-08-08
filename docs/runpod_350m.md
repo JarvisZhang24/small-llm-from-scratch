@@ -168,8 +168,14 @@ any V1 checkpoint. After its report passes, launch the H200 comparison:
 scripts/runpod/run_v2_modern.sh full
 ```
 
-The full command uses `micro_batch=32`, `grad_accumulation=16`, stops at
-10,500, and resumes only from `runs/v2-modern-h200-5.5b/checkpoints`. Every
+The full command uses `micro_batch=64`, `grad_accumulation=8`, stops at
+10,500, and resumes only from `runs/v2-modern-h200-5.5b/checkpoints`. This
+fills H200 memory more completely than the V1 run's `micro_batch=32` at the
+same 524,288-token global batch. Note that online validation consumes
+`eval_batches` batches of `micro_batch` sequences, so runs launched at
+different micro-batch sizes cover different amounts of held-out data; score
+finished checkpoints with `scripts/evaluate_checkpoints.py` whenever a
+comparison must be measured on identical data. Every
 500 steps it records both `validation/raw_*` and `validation/ema_*`; the
 backward-compatible `validation/loss` and `validation/perplexity` curves point
 to EMA for this recipe. Fixed-prompt generations also use EMA weights.
