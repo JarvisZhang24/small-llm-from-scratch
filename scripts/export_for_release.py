@@ -27,15 +27,15 @@ _DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torc
 _LOAD_SNIPPET = '''import json
 from pathlib import Path
 
-from safetensors.torch import load_file
+{loader_import}
 
 from jarvislm.model import GPT, ModelConfig
 
 fields = ModelConfig.__dataclass_fields__
 metadata = json.loads(Path("config.json").read_text())
-config = ModelConfig(**{k: v for k, v in metadata.items() if k in fields})
+config = ModelConfig(**{{k: v for k, v in metadata.items() if k in fields}})
 
-state = load_file("model.safetensors")
+state = {loader_call}
 if config.tie_weights:
     # The LM head shares the embedding table, so it is not stored separately.
     state["lm_head.weight"] = state["token_embeddings.weight"]
@@ -43,6 +43,17 @@ if config.tie_weights:
 model = GPT(config).eval()
 model.load_state_dict(state)
 '''
+
+_LOADERS = {
+    "model.safetensors": (
+        "from safetensors.torch import load_file",
+        'load_file("model.safetensors")',
+    ),
+    "pytorch_model.bin": (
+        "import torch",
+        'torch.load("pytorch_model.bin", map_location="cpu")',
+    ),
+}
 
 
 def _strip_compile_prefix(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -62,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=tuple(_DTYPES), default="float32")
     parser.add_argument(
         "--label", help="human-readable run name recorded in config.json"
+    )
+    parser.add_argument(
+        "--require-safetensors",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="fail instead of falling back to a pickled pytorch_model.bin",
     )
     return parser.parse_args()
 
@@ -99,8 +116,26 @@ def main() -> None:
         weights_path = output_dir / "model.safetensors"
         save_file(state, weights_path)
     except ImportError:
+        if args.require_safetensors:
+            raise SystemExit(
+                "safetensors is not installed; run `pip install safetensors` or "
+                "pass --no-require-safetensors to fall back to a pickled .bin"
+            ) from None
         weights_path = output_dir / "pytorch_model.bin"
         torch.save(state, weights_path)
+        print(
+            "warning: safetensors is not installed, so the weights were pickled "
+            "to pytorch_model.bin. Hugging Face flags pickled weights in the UI; "
+            "`pip install safetensors` and re-export to publish model.safetensors."
+        )
+
+    # A stale file from an earlier export in the other format would otherwise be
+    # uploaded alongside this one and load differently.
+    for name in _LOADERS:
+        stale = output_dir / name
+        if name != weights_path.name and stale.exists():
+            stale.unlink()
+            print(f"removed stale {stale}")
 
     metadata = asdict(config) | {
         "architecture": "JarvisLM-GPT",
@@ -118,8 +153,9 @@ def main() -> None:
     print(f"wrote {weights_path} ({size_gb:.2f} GiB, {args.dtype})")
     print(f"wrote {output_dir / 'config.json'}")
     print(f"parameters: {parameters:,} | variant: {args.variant} | step: {checkpoint.get('step')}")
+    loader_import, loader_call = _LOADERS[weights_path.name]
     print("\nLoad with:\n")
-    print(_LOAD_SNIPPET)
+    print(_LOAD_SNIPPET.format(loader_import=loader_import, loader_call=loader_call))
 
 
 if __name__ == "__main__":
