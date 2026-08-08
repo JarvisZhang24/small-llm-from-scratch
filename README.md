@@ -10,7 +10,7 @@
 ![Tests](https://img.shields.io/badge/tests-92%20passed-brightgreen)
 ![Tokens](https://img.shields.io/badge/pretraining-5.505B%20tokens%20%C3%97%202-success)
 [![W&B Report](https://img.shields.io/badge/W%26B-public%20report-FFBE00)](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/CreatorJarvis/JarvisLM-350M)
 
 JarvisLM is an independently implemented language-model training stack built
 from core PyTorch modules rather than an off-the-shelf trainer. It contains a
@@ -55,7 +55,7 @@ for a strictly matched head-to-head measurement.
 
 **Experiment artifacts:**
 [public W&B report](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
-· [Hugging Face model](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
+· [Hugging Face model](https://huggingface.co/CreatorJarvis/JarvisLM-350M)
 · [`artifacts/training_charts`](artifacts/training_charts)
 
 ## The V2 bundle reached a lower loss with fewer parameters

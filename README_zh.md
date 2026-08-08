@@ -9,7 +9,7 @@
 ![Tests](https://img.shields.io/badge/tests-92%20passed-brightgreen)
 ![Tokens](https://img.shields.io/badge/pretraining-5.505B%20tokens%20%C3%97%202-success)
 [![W&B Report](https://img.shields.io/badge/W%26B-public%20report-FFBE00)](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/CreatorJarvis/JarvisLM-350M)
 
 JarvisLM 是一套完全独立实现的语言模型训练栈，由 PyTorch 基础模块搭建，
 没有使用任何现成的 trainer 框架。项目包含一个 353.5M 参数的 V1 基线，
@@ -49,7 +49,7 @@ batch size 下用完整验证集重新给任意一组 checkpoint 打分，得到
 
 **实验产物：**
 [公开 W&B 报告](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
-· [Hugging Face 模型](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
+· [Hugging Face 模型](https://huggingface.co/CreatorJarvis/JarvisLM-350M)
 · [`artifacts/training_charts`](artifacts/training_charts)
 
 ## V2 用更少的参数收敛到更低的 loss
