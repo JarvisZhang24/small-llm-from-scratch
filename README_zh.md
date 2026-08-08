@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.2%2B-ee4c2c)](https://pytorch.org/)
-![Tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-92%20passed-brightgreen)
 ![Tokens](https://img.shields.io/badge/pretraining-5.505B%20tokens%20%C3%97%202-success)
 [![W&B Report](https://img.shields.io/badge/W%26B-public%20report-FFBE00)](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
@@ -212,7 +212,7 @@ PYTHONPATH=src pytest -q
 ruff check .
 ```
 
-已记录的测试套件包含 89 个通过的测试，覆盖模型组件、因果性行为、
+已记录的测试套件包含 92 个通过的测试，覆盖模型组件、因果性行为、
 GQA/Differential Attention、数据清单、Muon 参数划分、EMA 选择、checkpoint
 恢复，以及训练冒烟路径。
 

@@ -6,6 +6,7 @@ from torch.utils.data import TensorDataset
 
 from jarvislm.model import GPT
 from jarvislm.training.train import (
+    EMA,
     REFERENCE_SAMPLE_PROMPTS,
     TARGET_TRAIN_TOKENS,
     TOKENS_PER_REFERENCE_STEP,
@@ -14,6 +15,8 @@ from jarvislm.training.train import (
     _prepare_data_if_requested,
     cosine_learning_rate,
     generate_qualitative_samples,
+    load_checkpoint,
+    save_checkpoint,
     smoke_test,
     train,
 )
@@ -125,6 +128,42 @@ def test_checkpoint_resume_continues_completed_step(tmp_path) -> None:
 
     assert first.metrics[-1].step == 1
     assert resumed.metrics[-1].step == 2
+
+
+def test_resume_without_ema_state_reseeds_ema_from_the_restored_model(
+    tmp_path, capsys
+) -> None:
+    # Starting an EMA-enabled stage from an EMA-free checkpoint (for example
+    # SFT from a V1 pretraining checkpoint) must not leave the shadow weights
+    # on this process's random initialization.
+    config = TrainConfig.smoke()
+    config.use_ema = True
+    config.validate()
+    device = torch.device("cpu")
+
+    trained = GPT(config.model)
+    torch.nn.init.constant_(trained.token_embeddings.weight, 0.5)
+    optimizer = torch.optim.AdamW(trained.parameters(), lr=1e-3)
+    checkpoint = save_checkpoint(
+        tmp_path / "no_ema.pt", trained, optimizer, None, None, 7, config
+    )
+    assert "ema" not in torch.load(checkpoint, weights_only=False)
+
+    restored = GPT(config.model)
+    ema = EMA(restored, config.ema_decay)
+    step = load_checkpoint(
+        checkpoint,
+        restored,
+        torch.optim.AdamW(restored.parameters(), lr=1e-3),
+        None,
+        ema,
+        device,
+    )
+
+    assert step == 7
+    assert "no EMA state" in capsys.readouterr().out
+    for shadow, parameter in zip(ema.model.parameters(), restored.parameters()):
+        assert torch.equal(shadow, parameter)
 
 
 def test_checkpoint_resume_skips_a_newer_unreadable_checkpoint(tmp_path) -> None:

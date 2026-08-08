@@ -295,6 +295,14 @@ class EMA:
         ):
             ema_parameter.lerp_(parameter, 1.0 - self.decay)
 
+    @torch.no_grad()
+    def reset_from(self, model: nn.Module) -> None:
+        """Restart the average from ``model``'s current weights."""
+        for ema_parameter, parameter in zip(
+            self.model.parameters(), model.parameters()
+        ):
+            ema_parameter.copy_(parameter)
+
     def state_dict(self) -> dict[str, torch.Tensor]:
         return self.model.state_dict()
 
@@ -556,8 +564,22 @@ def load_checkpoint(
     adamw.load_state_dict(checkpoint["adamw"])
     if muon is not None and "muon" in checkpoint:
         muon.load_state_dict(checkpoint["muon"])
-    if ema is not None and "ema" in checkpoint:
-        ema.load_state_dict(checkpoint["ema"])
+    if ema is not None:
+        if "ema" in checkpoint:
+            ema.load_state_dict(checkpoint["ema"])
+        else:
+            # The checkpoint predates EMA for this run (for example, starting an
+            # EMA-enabled stage from an EMA-free pretraining checkpoint).  The
+            # shadow weights still hold this process's random initialization,
+            # which is unrelated to the weights just restored above.  Reseed
+            # them from the restored model so EMA cold-starts from the resumed
+            # point instead of decaying away a random model for thousands of
+            # updates while eval_use_ema silently reports it.
+            ema.reset_from(model)
+            print(
+                f"warning: {path} has no EMA state; reinitializing EMA shadow "
+                "weights from the restored model"
+            )
     # torch.load(map_location=cuda) also maps ByteTensor RNG states to CUDA.
     # PyTorch generators require these state tensors on CPU.
     torch.random.set_rng_state(checkpoint["cpu_rng_state"].cpu())

@@ -7,7 +7,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.2%2B-ee4c2c)](https://pytorch.org/)
-![Tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-92%20passed-brightgreen)
 ![Tokens](https://img.shields.io/badge/pretraining-5.505B%20tokens%20%C3%97%202-success)
 [![W&B Report](https://img.shields.io/badge/W%26B-public%20report-FFBE00)](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97-JarvisLM--350M-yellow)](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
@@ -234,7 +234,7 @@ PYTHONPATH=src pytest -q
 ruff check .
 ```
 
-The recorded test suite contains 89 passing tests covering model components,
+The recorded test suite contains 92 passing tests covering model components,
 causal behavior, GQA/Differential Attention, data manifests, Muon parameter
 partitioning, EMA selection, checkpoint recovery, and the training smoke path.
 
