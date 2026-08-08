@@ -18,6 +18,11 @@ class GPT(nn.Module):
     only input embeddings required here.  When mHC is enabled, every block
     operates on ``[S, B, T, D]`` residual streams and a learned final readout
     returns the usual ``[B, T, D]`` representation before the LM head.
+
+    This class deliberately exposes no ``generate`` method.  The model
+    vocabulary is padded past the tokenizer's usable range, so sampling is only
+    correct when the padded IDs are excluded; that rule lives in exactly one
+    place, :func:`jarvislm.inference.generate_token_ids`.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -108,42 +113,6 @@ class GPT(nn.Module):
                 ignore_index=-100,
             )
         return logits, loss
-
-    @torch.no_grad()
-    def generate(
-        self,
-        input_ids: torch.Tensor,
-        max_new_tokens: int,
-        temperature: float = 1.0,
-        top_k: int | None = None,
-    ) -> torch.Tensor:
-        """Autoregressively sample tokens using the model context window."""
-        if max_new_tokens < 0:
-            raise ValueError("max_new_tokens must be non-negative")
-        if temperature <= 0:
-            raise ValueError("temperature must be positive")
-        if top_k is not None and top_k <= 0:
-            raise ValueError("top_k must be positive when provided")
-
-        was_training = self.training
-        self.eval()
-        try:
-            for _ in range(max_new_tokens):
-                context = input_ids[:, -self.config.max_seq_len :]
-                logits, _ = self(context)
-                next_token_logits = logits[:, -1, :] / temperature
-                if top_k is not None:
-                    k = min(top_k, next_token_logits.shape[-1])
-                    threshold = torch.topk(next_token_logits, k).values[:, [-1]]
-                    next_token_logits = next_token_logits.masked_fill(
-                        next_token_logits < threshold, float("-inf")
-                    )
-                probabilities = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probabilities, num_samples=1)
-                input_ids = torch.cat((input_ids, next_token), dim=1)
-        finally:
-            self.train(was_training)
-        return input_ids
 
     def count_parameters(self) -> dict[str, int]:
         """Return an untied-parameter-safe component breakdown."""

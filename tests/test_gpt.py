@@ -57,15 +57,10 @@ def test_gpt_forward_without_mhc_uses_standard_blocks() -> None:
     assert all(not block.use_mhc for block in model.blocks)
 
 
-def test_gpt_generate_crops_context_and_restores_training_mode() -> None:
-    config = make_tiny_config(max_seq_len=4, n_layers=1)
-    model = GPT(config).train()
-    prompt = torch.randint(0, config.vocab_size, (1, 6))
-
-    generated = model.generate(prompt, max_new_tokens=3, top_k=5)
-
-    assert generated.shape == (1, 9)
-    assert model.training is True
+def test_gpt_exposes_no_unsafe_generate_method() -> None:
+    # Sampling must go through jarvislm.inference.generate_token_ids, which is
+    # the only path that excludes the padded vocabulary entries.
+    assert not hasattr(GPT(make_tiny_config()), "generate")
 
 
 def test_gpt_count_parameters_excludes_tied_lm_head() -> None:
@@ -80,7 +75,7 @@ def test_gpt_count_parameters_excludes_tied_lm_head() -> None:
     assert untied_counts["total"] == tied_counts["total"] + 32 * 16
 
 
-def test_gpt_rejects_invalid_input_target_and_generation_arguments() -> None:
+def test_gpt_rejects_invalid_input_and_target_arguments() -> None:
     config = make_tiny_config()
     model = GPT(config)
     input_ids = torch.randint(0, config.vocab_size, (2, 5))
@@ -91,9 +86,3 @@ def test_gpt_rejects_invalid_input_target_and_generation_arguments() -> None:
         model(torch.randint(0, config.vocab_size, (1, 9)))
     with pytest.raises(ValueError, match="same shape"):
         model(input_ids, torch.randint(0, config.vocab_size, (2, 4)))
-    with pytest.raises(ValueError, match="non-negative"):
-        model.generate(input_ids, max_new_tokens=-1)
-    with pytest.raises(ValueError, match="temperature"):
-        model.generate(input_ids, max_new_tokens=1, temperature=0.0)
-    with pytest.raises(ValueError, match="top_k"):
-        model.generate(input_ids, max_new_tokens=1, top_k=0)

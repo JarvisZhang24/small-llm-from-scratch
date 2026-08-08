@@ -87,6 +87,42 @@ def test_generation_masks_padded_vocabulary_and_restores_training_mode() -> None
     assert model.training is True
 
 
+def test_generate_token_ids_crops_context_to_max_seq_len() -> None:
+    model = PaddedLogitModel()
+    seen_lengths: list[int] = []
+    forward = model.forward
+    model.forward = lambda ids: (seen_lengths.append(ids.shape[1]), forward(ids))[1]  # type: ignore[method-assign]
+
+    generated = generate_token_ids(
+        model,  # type: ignore[arg-type]
+        torch.tensor([[1, 1, 1, 1, 1, 1]]),
+        max_new_tokens=3,
+        valid_vocab_size=7,
+        top_k=1,
+    )
+
+    assert generated.shape == (1, 9)
+    assert seen_lengths == [4, 4, 4]  # never exceeds max_seq_len=4
+
+
+def test_generate_token_ids_rejects_invalid_sampling_arguments() -> None:
+    model = PaddedLogitModel()
+    input_ids = torch.tensor([[1]])
+
+    with pytest.raises(ValueError, match="non-negative"):
+        generate_token_ids(
+            model, input_ids, max_new_tokens=-1, valid_vocab_size=7  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="temperature"):
+        generate_token_ids(
+            model, input_ids, max_new_tokens=1, valid_vocab_size=7, temperature=0.0  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="top_k"):
+        generate_token_ids(
+            model, input_ids, max_new_tokens=1, valid_vocab_size=7, top_k=0  # type: ignore[arg-type]
+        )
+
+
 def test_generate_text_handles_empty_prompt_and_validation() -> None:
     tokenizer = FakeTokenizer()
     model = PaddedLogitModel()
