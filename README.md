@@ -1,5 +1,7 @@
 # JarvisLM
 
+**English** · [简体中文](README_zh.md)
+
 > A native-PyTorch reproduction and controlled modernization study of a
 > decoder-only language model at the 350M-parameter scale.
 
@@ -36,19 +38,27 @@ single-H200 throughput**.
 | Validation loss | 2.9440 | 2.9134 | **2.8925** |
 | Validation perplexity | 18.99 | 18.42 | **18.04** |
 | Typical throughput | ~164k tokens/s | ~113.4k tokens/s | N/A |
-| Optimizer | AdamW | Muon + AdamW | Shadow weights only |
+| Optimizer | AdamW | Muon + AdamW | Muon + AdamW |
 
-The loss and perplexity values above use the same deterministic held-out data
-and fixed 20-batch online validation protocol. V1 has no EMA; the fair
-architecture/optimizer comparison is therefore **V1 Base vs V2 Modern Raw**.
-V2 EMA is reported separately as the best final weight candidate.
+V2 Modern Raw and V2 Modern EMA are two weight snapshots from the **same
+training run**: EMA is a non-trainable moving average (decay 0.9995) of the
+raw weights, so it is produced by the same Muon + AdamW optimization rather
+than by a different optimizer.
+
+Validation loss and perplexity are the trainer's online measurements on the
+project's deterministic held-out split. V1 has no EMA, so the fair
+architecture/optimizer comparison is **V1 Base vs V2 Modern Raw**; V2 EMA is
+reported separately as the best final weight candidate.
+[`scripts/evaluate_checkpoints.py`](scripts/evaluate_checkpoints.py) re-scores
+any set of checkpoints at one fixed batch size over the full validation split
+for a strictly matched head-to-head measurement.
 
 **Experiment artifacts:**
 [public W&B report](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
 · [Hugging Face model](https://huggingface.co/JarvisZhang24/JarvisLM-350M)
 · [`artifacts/training_charts`](artifacts/training_charts)
 
-## The V2 bundle converged faster with fewer parameters
+## The V2 bundle reached a lower loss with fewer parameters
 
 V2 starts from a different parameterization, so the initial losses are not
 expected to match exactly. After the early transient, its training curve stays
@@ -84,11 +94,10 @@ V2 system rather than isolating the cost of each component.
   <img src="artifacts/training_charts/v1_v2_step_time.png" alt="V1 and V2 training step time" width="49%">
 </p>
 
-V1 used a 32-sequence micro-batch with 16 accumulation steps; the reported V2
-run used a 64-sequence micro-batch with 8 accumulation steps. Both preserve
-the same 512 sequences/update global batch. Consequently, the throughput
-numbers are practical end-to-end measurements of the two tuned run
-configurations, not a strict architecture-only microbenchmark.
+Each run was launched with the micro-batch/accumulation split that best filled
+H200 memory at the shared 512-sequence global batch, so these figures are
+end-to-end throughput for two tuned single-GPU configurations rather than an
+isolated attention-kernel benchmark.
 
 ## Training remained numerically stable
 
@@ -244,11 +253,27 @@ scripts/runpod/run_v2_modern.sh preflight
 scripts/runpod/run_v2_modern.sh full
 ```
 
-The published V2 H200 result used `--micro-batch-size 64` and
-`--grad-accumulation-steps 8`. Preserve those values when reproducing its
-reported throughput. See [`docs/runpod_350m.md`](docs/runpod_350m.md) for the
-persistent-volume layout, environment variables, preflight gates, and recovery
-workflow.
+Each launcher pins the micro-batch/accumulation split used for its published
+run, so the committed scripts reproduce the reported throughput as-is. See
+[`docs/runpod_350m.md`](docs/runpod_350m.md) for the persistent-volume layout,
+environment variables, preflight gates, and recovery workflow.
+
+### Matched-protocol evaluation
+
+Online validation is a training-time signal. For a publication-grade
+head-to-head number, this script re-scores finished checkpoints at one fixed
+batch size over the complete validation split:
+
+```bash
+PYTHONPATH=src python scripts/evaluate_checkpoints.py \
+  V1=runs/v1-h200-5.5b/checkpoints/last.pt \
+  V2=runs/v2-modern-h200-5.5b/checkpoints/last.pt \
+  --val-dir data/fineweb-edu-v1-sample-10bt/val --batch-size 32
+```
+
+Every checkpoint's raw weights are scored, EMA weights are scored additionally
+when present, and the script aborts if any checkpoint ends up seeing a
+different number of sequences. It prints a Markdown table.
 
 ## Repository layout
 
@@ -257,6 +282,7 @@ workflow.
 ├── artifacts/training_charts/ # exported W&B evidence
 ├── docs/runpod_350m.md         # RunPod preparation and training guide
 ├── scripts/
+│   ├── evaluate_checkpoints.py # matched-protocol checkpoint scoring
 │   ├── generate_samples.py
 │   └── runpod/                 # environment, data, preflight, V1/V2 launchers
 ├── src/jarvislm/
@@ -273,14 +299,15 @@ workflow.
 
 - The reported runs process 5.505B scheduled tokens each; neither is described
   as a completed 10B-token training run.
-- Final loss/PPL values are the trainer's deterministic 20-batch validation
-  measurements rather than benchmark-grade full-validation estimates.
+- Final loss/PPL values are the trainer's online validation measurements rather
+  than benchmark-grade full-validation estimates;
+  `scripts/evaluate_checkpoints.py` re-scores checkpoints over the complete
+  held-out split when an exact head-to-head number is needed.
 - V2 is a bundled intervention. These experiments do not establish that Muon,
   Differential Attention, or any other individual component caused the full
   observed improvement.
-- V1 and V2 use different micro-batch/accumulation decompositions at the same
-  global batch, so throughput is an end-to-end tuned-system comparison rather
-  than an isolated kernel benchmark.
+- Throughput is an end-to-end comparison of two tuned single-GPU run
+  configurations, not an isolated attention-kernel benchmark.
 - Fixed-prompt generations show coherent local English by the end of training,
   but factuality, code generation, and instruction following remain limited in
   the pre-trained base models.
