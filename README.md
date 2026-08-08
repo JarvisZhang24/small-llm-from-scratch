@@ -25,33 +25,37 @@ optimizer updates on one NVIDIA H200 SXM. Each run processed exactly
 
 ## Results at a glance
 
-At the matched stopping point, V2 used **10.7% fewer parameters** and achieved
-lower validation loss than V1. Its raw weights improved loss by **0.0306** and
-perplexity by **3.0%**; EMA further improved the final result to **2.8925 loss /
-18.04 PPL**. The trade-off was an approximately **30.9% reduction in measured
-single-H200 throughput**.
+V2 used **10.7% fewer parameters** and reached a lower validation loss than V1.
+Its raw weights improved loss by **0.0456** and perplexity by **4.5%**; EMA
+extended that to **0.0661 loss / 6.4% perplexity**. The trade-off was an
+approximately **30.9% reduction in measured single-H200 throughput**.
 
-| Metric at step 10,500 | V1 Base | V2 Modern Raw | V2 Modern EMA |
+| Final checkpoint | V1 Base | V2 Modern Raw | V2 Modern EMA |
 | --- | ---: | ---: | ---: |
 | Parameters | 353,502,208 | 315,758,848 | 315,758,848 |
-| Scheduled tokens | 5,505,024,000 | 5,505,024,000 | 5,505,024,000 |
-| Validation loss | 2.9440 | 2.9134 | **2.8925** |
-| Validation perplexity | 18.99 | 18.42 | **18.04** |
+| Updates | 10,586 | 10,500 | 10,500 |
+| Validation loss | 2.9595 | 2.9139 | **2.8934** |
+| Validation perplexity | 19.29 | 18.43 | **18.05** |
 | Typical throughput | ~164k tokens/s | ~113.4k tokens/s | N/A |
 | Optimizer | AdamW | Muon + AdamW | Muon + AdamW |
+
+Every figure above comes from one evaluation pass over the **complete held-out
+split** — the same 19,520 sequences (19,988,480 tokens) at one fixed batch size
+for all three weight sets — produced by
+[`scripts/evaluate_checkpoints.py`](scripts/evaluate_checkpoints.py). The
+trainer's online validation, which is what the W&B curves plot, samples 20
+batches instead and is a training-time signal rather than the reported result.
+
+Two asymmetries both work against V2, so the measured gap is a conservative one.
+V1's saved checkpoint sits at 10,586 updates rather than 10,500, giving it 86
+extra updates and roughly 45M extra tokens of training. And V1 has no EMA, so
+the fair architecture/optimizer comparison is **V1 Base vs V2 Modern Raw**; V2
+EMA is reported separately as the best final weight candidate.
 
 V2 Modern Raw and V2 Modern EMA are two weight snapshots from the **same
 training run**: EMA is a non-trainable moving average (decay 0.9995) of the
 raw weights, so it is produced by the same Muon + AdamW optimization rather
 than by a different optimizer.
-
-Validation loss and perplexity are the trainer's online measurements on the
-project's deterministic held-out split. V1 has no EMA, so the fair
-architecture/optimizer comparison is **V1 Base vs V2 Modern Raw**; V2 EMA is
-reported separately as the best final weight candidate.
-[`scripts/evaluate_checkpoints.py`](scripts/evaluate_checkpoints.py) re-scores
-any set of checkpoints at one fixed batch size over the full validation split
-for a strictly matched head-to-head measurement.
 
 **Experiment artifacts:**
 [public W&B report](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
@@ -67,10 +71,10 @@ fewer parameters.
 
 ![V1 and V2 training loss](artifacts/training_charts/v1_v2_training_loss.png)
 
-The V2 raw validation curve decreases smoothly to 2.9134. Because W&B logged
-V1's primary validation metric as `validation/loss` and V2 raw validation as
-`validation/raw_loss`, the exact matched result is given in the table above
-rather than presented as a misleading same-key overlay.
+The V2 raw validation curve decreases smoothly through training. Because W&B
+logged V1's primary validation metric as `validation/loss` and V2 raw
+validation as `validation/raw_loss`, the exact matched result is given in the
+table above rather than presented as a misleading same-key overlay.
 
 <p align="center">
   <img src="artifacts/training_charts/v2_raw_validation_loss.png" alt="V2 raw validation loss" width="49%">
@@ -160,8 +164,8 @@ bundle while holding the main data and optimization budget constant.
 | EMA | Off | On, decay 0.9995 |
 | Micro-batch / accumulation | 32 / 16 | 64 / 8 |
 | Global batch | 524,288 tokens/update | 524,288 tokens/update |
-| Updates | 10,500 | 10,500 |
-| Token budget | 5,505,024,000 | 5,505,024,000 |
+| Planned updates | 10,500 | 10,500 |
+| Planned token budget | 5,505,024,000 | 5,505,024,000 |
 | AdamW peak / minimum LR | 3e-4 / 3e-5 | 3e-4 / 3e-5 |
 | Muon peak LR | N/A | 1.5e-4 |
 | Warmup / cosine horizon | 1,000 / 20,000 updates | 1,000 / 20,000 updates |
@@ -169,8 +173,11 @@ bundle while holding the main data and optimization budget constant.
 | Hardware | 1× NVIDIA H200 SXM | 1× NVIDIA H200 SXM |
 
 The 20,000-update schedule horizon is intentionally longer than the 10,500
-update comparison window. Both runs stop on the same point of the AdamW LR
-curve; V2 additionally schedules Muon's LR over the same horizon.
+update comparison window, so both runs stop on the same point of the AdamW LR
+curve; V2 additionally schedules Muon's LR over the same horizon. V1's run was
+halted manually and its saved checkpoint landed at 10,586 updates, 86 past the
+planned stopping point — a 0.8% training advantage for the baseline that the
+reported comparison does not correct for.
 
 This design supports a **bundle-level descriptive comparison**. It does not
 identify the individual causal contribution of GQA, QK-Norm, Differential
@@ -199,7 +206,8 @@ Documents are tokenized with an end-of-text token and written to little-endian
 - **EMA weights** are a non-trainable exponential moving average of V2's raw
   weights with decay 0.9995.
 - **Validation loss/PPL** are next-token cross-entropy and its exponential,
-  measured on the same deterministic 20-batch validation protocol.
+  measured for every reported checkpoint on the complete held-out split under
+  one fixed batch size.
 - **Throughput** is scheduled training tokens divided by optimizer-step time;
   evaluation, sample generation, and checkpoint I/O are outside the steady
   training-step measurement.
@@ -299,10 +307,11 @@ different number of sequences. It prints a Markdown table.
 
 - The reported runs process 5.505B scheduled tokens each; neither is described
   as a completed 10B-token training run.
-- Final loss/PPL values are the trainer's online validation measurements rather
-  than benchmark-grade full-validation estimates;
-  `scripts/evaluate_checkpoints.py` re-scores checkpoints over the complete
-  held-out split when an exact head-to-head number is needed.
+- Reported loss/PPL cover the project's own 20M-token held-out split. They are
+  not `lm-eval-harness` or any other public benchmark, and absolute values are
+  not comparable across repositories that hold out different data.
+- V1's saved checkpoint carries 86 updates more than V2's, so the two final
+  weight sets are not matched to the update. The difference favors V1.
 - V2 is a bundled intervention. These experiments do not establish that Muon,
   Differential Attention, or any other individual component caused the full
   observed improvement.

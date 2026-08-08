@@ -45,15 +45,20 @@ NVIDIA H200 SXM, with 24 layers, hidden size 1,024, and a 1,024-token context.
 
 ## Results
 
-| Step 10,500 | V1 Base | V2 Raw | V2 EMA (this model) |
+| Final checkpoint | V1 Base | V2 Raw | V2 EMA (this model) |
 | --- | ---: | ---: | ---: |
-| Validation loss | 2.9440 | 2.9134 | **2.8925** |
-| Validation perplexity | 18.99 | 18.42 | **18.04** |
+| Updates | 10,586 | 10,500 | 10,500 |
+| Validation loss | 2.9595 | 2.9139 | **2.8934** |
+| Validation perplexity | 19.29 | 18.43 | **18.05** |
 
-V2 reached a lower validation loss than V1 with 10.7% fewer parameters. The
-figures above are the trainer's online validation measurements; the repository
-ships `scripts/evaluate_checkpoints.py` to re-score checkpoints at one fixed
-batch size over the complete held-out split.
+V2 reached a lower validation loss than V1 with 10.7% fewer parameters: 4.5%
+lower perplexity for the raw weights, 6.4% for these EMA weights.
+
+All three figures come from one pass over the complete 20M-token held-out
+split — the same 19,520 sequences at one fixed batch size — using
+`scripts/evaluate_checkpoints.py` from the repository. V1's saved checkpoint
+carries 86 updates more than V2's, so the measured gap understates rather than
+flatters the V2 architecture.
 
 ## Architecture
 

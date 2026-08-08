@@ -23,29 +23,33 @@ QK-Norm、Differential Attention、Muon/AdamW 优化器分组，以及指数移�
 
 ## 核心结果
 
-在相同的停止点上，V2 用**少 10.7% 的参数**取得了比 V1 更低的验证损失：
-raw 权重将 loss 降低 **0.0306**、困惑度降低 **3.0%**；EMA 进一步把最终结果
-推到 **2.8925 loss / 18.04 PPL**。代价是单卡 H200 实测吞吐**下降约 30.9%**。
+V2 用**少 10.7% 的参数**取得了比 V1 更低的验证损失：raw 权重将 loss 降低
+**0.0456**、困惑度降低 **4.5%**；EMA 把这一优势扩大到 **0.0661 loss /
+6.4% 困惑度**。代价是单卡 H200 实测吞吐**下降约 30.9%**。
 
-| Step 10,500 指标 | V1 Base | V2 Modern Raw | V2 Modern EMA |
+| 最终 checkpoint | V1 Base | V2 Modern Raw | V2 Modern EMA |
 | --- | ---: | ---: | ---: |
 | 参数量 | 353,502,208 | 315,758,848 | 315,758,848 |
-| 计划 token 数 | 5,505,024,000 | 5,505,024,000 | 5,505,024,000 |
-| 验证 loss | 2.9440 | 2.9134 | **2.8925** |
-| 验证困惑度 | 18.99 | 18.42 | **18.04** |
+| 更新步数 | 10,586 | 10,500 | 10,500 |
+| 验证 loss | 2.9595 | 2.9139 | **2.8934** |
+| 验证困惑度 | 19.29 | 18.43 | **18.05** |
 | 典型吞吐 | ~164k tokens/s | ~113.4k tokens/s | N/A |
 | 优化器 | AdamW | Muon + AdamW | Muon + AdamW |
+
+上表所有数字都来自**完整 held-out 验证集**上的一次评估——三份权重使用同一批
+19,520 条序列（19,988,480 tokens）、同一个固定 batch size，由
+[`scripts/evaluate_checkpoints.py`](scripts/evaluate_checkpoints.py) 产生。
+训练器的在线验证（即 W&B 曲线所绘制的内容）只采样 20 个 batch，是训练期信号，
+不作为报告结果。
+
+有两处不对称都对 V2 不利，因此实测差距是保守的。其一，V1 保存下来的
+checkpoint 停在 10,586 步而非 10,500，多了 86 个更新步、约 4,500 万 token 的
+训练量。其二，V1 没有 EMA，因此**架构/优化器的公平对比口径是 V1 Base vs
+V2 Modern Raw**；V2 EMA 作为最优最终权重候选单独报告。
 
 V2 Modern Raw 与 V2 Modern EMA 是**同一次训练**的两份权重快照：EMA 是 raw
 权重的不可训练滑动平均（decay 0.9995），因此它同样由 Muon + AdamW 优化产生，
 而不是换了另一个优化器。
-
-验证 loss 与困惑度是训练器在项目确定性 held-out 划分上的在线测量值。
-V1 没有 EMA，因此**架构/优化器的公平对比口径是 V1 Base vs V2 Modern Raw**；
-V2 EMA 作为最优最终权重候选单独报告。
-[`scripts/evaluate_checkpoints.py`](scripts/evaluate_checkpoints.py) 可以在固定
-batch size 下用完整验证集重新给任意一组 checkpoint 打分，得到严格同基准的
-对比数字。
 
 **实验产物：**
 [公开 W&B 报告](https://api.wandb.ai/links/jarviszhang-new-york-university/ngem6azk)
@@ -60,7 +64,7 @@ V2 的参数化方式与 V1 不同，因此初始 loss 本就不应完全一致�
 
 ![V1 与 V2 训练 loss](artifacts/training_charts/v1_v2_training_loss.png)
 
-V2 的 raw 验证曲线平滑下降至 2.9134。由于 W&B 中 V1 的主验证指标记录为
+V2 的 raw 验证曲线在训练全程平滑下降。由于 W&B 中 V1 的主验证指标记录为
 `validation/loss`，而 V2 的 raw 验证记录为 `validation/raw_loss`，精确的同基准
 结果以上方表格为准，而不是把两个不同键叠成一张容易误读的曲线图。
 
@@ -144,16 +148,18 @@ micro-batch/梯度累积组合，因此这里的数字是两套调优后单卡�
 | EMA | 关 | 开，decay 0.9995 |
 | Micro-batch / 梯度累积 | 32 / 16 | 64 / 8 |
 | 全局批量 | 524,288 tokens/update | 524,288 tokens/update |
-| 更新步数 | 10,500 | 10,500 |
-| Token 预算 | 5,505,024,000 | 5,505,024,000 |
+| 计划更新步数 | 10,500 | 10,500 |
+| 计划 token 预算 | 5,505,024,000 | 5,505,024,000 |
 | AdamW 峰值 / 最小学习率 | 3e-4 / 3e-5 | 3e-4 / 3e-5 |
 | Muon 峰值学习率 | N/A | 1.5e-4 |
 | Warmup / 余弦周期 | 1,000 / 20,000 步 | 1,000 / 20,000 步 |
 | 随机种子 | 42 | 42 |
 | 硬件 | 1× NVIDIA H200 SXM | 1× NVIDIA H200 SXM |
 
-20,000 步的学习率调度周期刻意长于 10,500 步的对比窗口。两次训练停在 AdamW
-学习率曲线上的同一点；V2 的 Muon 学习率也按同一周期调度。
+20,000 步的学习率调度周期刻意长于 10,500 步的对比窗口，使两次训练停在 AdamW
+学习率曲线上的同一点；V2 的 Muon 学习率也按同一周期调度。V1 的训练是手动中止
+的，保存下来的 checkpoint 落在 10,586 步、超出计划停止点 86 步——这相当于给
+基线多了 0.8% 的训练量，报告中的对比未对此做任何修正。
 
 这一设计支持的是**整组层面的描述性对比**，并不能识别 GQA、QK-Norm、
 Differential Attention、Muon 或 EMA 各自的因果贡献。组件级归因需要单独的
@@ -177,8 +183,8 @@ JarvisLM 使用 GPT-2 分词器与 FineWeb-Edu `sample-10BT` 数据流。文档�
   声称完整消耗了 FineWeb-Edu `sample-10BT` 数据池。
 - **Raw 权重**指由 AdamW 或 Muon/AdamW 直接更新的参数。
 - **EMA 权重**是 V2 raw 权重的不可训练指数移动平均，decay 为 0.9995。
-- **验证 loss / PPL** 是下一 token 的交叉熵及其指数，按训练器的确定性在线
-  验证协议测得。
+- **验证 loss / PPL** 是下一 token 的交叉熵及其指数，每个报告的 checkpoint 都
+  在完整 held-out 验证集上、以同一个固定 batch size 测得。
 - **吞吐**为计划训练 token 数除以优化器步耗时；验证、样本生成与 checkpoint
   I/O 不计入稳态训练步的测量。
 
@@ -274,9 +280,11 @@ PYTHONPATH=src python scripts/evaluate_checkpoints.py \
 
 - 报告的两次训练各消耗 5.505B 计划 token；两者都不被描述为完成了 10B token
   的训练。
-- 最终 loss/PPL 是训练器的在线验证测量值，而非基准级别的全量验证估计；
-  需要精确的正面对比数字时，用 `scripts/evaluate_checkpoints.py` 在完整
-  held-out 集上重新打分。
+- 报告的 loss/PPL 基于本项目自己的 2000 万 token held-out 划分，不是
+  `lm-eval-harness` 或任何公开基准；不同仓库持有不同的验证集，绝对值之间
+  不可直接比较。
+- V1 保存的 checkpoint 比 V2 多 86 个更新步，两份最终权重并非严格对齐到同一步，
+  且该差异对 V1 有利。
 - V2 是一个捆绑式干预。这些实验并不能证明 Muon、Differential Attention 或
   任何单一组件造成了全部的观测改进。
 - 吞吐是两套调优后单卡运行配置的端到端对比，而非隔离的注意力 kernel 基准。
