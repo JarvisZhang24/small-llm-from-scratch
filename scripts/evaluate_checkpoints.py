@@ -9,6 +9,7 @@ split rather than a 20-batch sample.
 """
 
 import argparse
+import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
@@ -106,6 +107,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="also write results and protocol settings to this JSON file",
+    )
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
@@ -164,8 +170,9 @@ def main() -> None:
     measured = {sequences for *_, sequences in results}
     if len(measured) != 1:
         raise RuntimeError(f"checkpoints saw different sequence counts: {measured}")
+    sequences = measured.pop()
     print(
-        f"\nEvaluated every checkpoint on the same {measured.pop():,} sequences "
+        f"\nEvaluated every checkpoint on the same {sequences:,} sequences "
         f"({args.batch_size} sequences/batch).\n"
     )
     print("| Checkpoint | Step | Validation loss | Perplexity |")
@@ -173,6 +180,32 @@ def main() -> None:
     for name, step, loss, _ in results:
         step_text = "n/a" if step is None else f"{step:,}"
         print(f"| {name} | {step_text} | {loss:.4f} | {math.exp(loss):.2f} |")
+
+    if args.output is not None:
+        report = {
+            "protocol": {
+                "validation_dir": str(args.val_dir),
+                "sequence_length": seq_len,
+                "batch_size": args.batch_size,
+                "sequences_evaluated": sequences,
+                "tokens_evaluated": sequences * (seq_len or 0),
+                "max_batches": args.max_batches,
+                "device": str(device),
+            },
+            "checkpoints": {label: str(path) for label, path in entries},
+            "results": [
+                {
+                    "name": name,
+                    "step": step,
+                    "validation_loss": loss,
+                    "perplexity": math.exp(loss),
+                }
+                for name, step, loss, _ in results
+            ],
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        print(f"\nwrote {args.output}")
 
 
 if __name__ == "__main__":
